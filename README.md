@@ -1,10 +1,50 @@
 # llm-schema-validator
 
-**Structured JSON from LLMs with schema validation, coercion, and retries** — describe the shape you need, call `query()`, and get typed data or clear validation errors instead of fragile prompt-only parsing.
+TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extraction, coercion, validation, and retries — works with OpenAI, Anthropic, and custom providers.
 
-## The problem
+[![npm version](https://img.shields.io/npm/v/llm-schema-validator.svg)](https://www.npmjs.com/package/llm-schema-validator)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/LICENSE)
+[![Security](https://img.shields.io/badge/security-reviewed-brightgreen)](#security-and-abuse)
+![Tests](https://img.shields.io/badge/tests-vitest%20passing-brightgreen)
+![TypeScript](https://img.shields.io/badge/TypeScript-First-3178C6?logo=typescript&logoColor=white)
+![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)
 
-Large language models rarely return perfectly valid JSON on the first try: extra prose, markdown fences, wrong types, and minor syntax issues break `JSON.parse` and downstream code. This package wraps your provider, augments prompts with a compact schema description, extracts JSON from messy replies, optionally coerces common mismatches, validates against your schema, and retries with targeted correction prompts until the output matches or limits are reached.
+**[Features](#features)** · **[Install](#installation)** · **[Quick start](#quick-start)** · **[API](#core-api)** · **[Providers](#built-in-providers)** · **[Schema](#schema-definition-guide)**
+
+---
+
+## What it does
+
+Large language models often return JSON that is almost right: extra prose, markdown fences, wrong types, or small syntax issues. This library:
+
+1. Sends your task plus a **compact description of the fields** you need.
+2. **Extracts JSON** from the raw model text.
+3. Optionally **coerces** common mismatches (for example string numbers → numbers).
+4. **Validates** against your schema.
+5. On failure, **retries** with a correction prompt that includes validation errors (until `maxRetries` is reached).
+
+You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMProvider`**. You get either typed **`data`** with **`success: true`**, or **`success: false`** with **`errors`**, or a thrown error when the run cannot complete (see [Errors](#errors-and-exceptions)).
+
+> **Note:** The `Schema` type is a **small TypeScript field map** used by this package. It is **not** the [JSON Schema](https://json-schema.org/) specification.
+
+---
+
+## Features
+
+- **`query()`** — End-to-end flow: prompt → model → parse → coerce → validate → retry.
+- **`defineSchema()`** — Typed helper so schema objects stay autocomplete-friendly.
+- **Built-in providers** — `createOpenAIProvider` (Chat Completions), `createAnthropicProvider` (Messages API), `createCustomProvider` (any async `(prompt) => string`).
+- **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`).
+- **Diagnostics** — `debug` or inject a **`logger`** for structured logs (avoid logging secrets in production).
+
+---
+
+## Requirements
+
+- **Node.js** `>= 20` (see [`engines`](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/package.json) in the repo).
+- A runtime where **`fetch`** is available (Node 18+ global `fetch`, or polyfilled in older environments), as used by the official OpenAI / Anthropic clients.
+
+---
 
 ## Installation
 
@@ -12,7 +52,9 @@ Large language models rarely return perfectly valid JSON on the first try: extra
 npm install llm-schema-validator
 ```
 
-Peer requirement: a runtime with `fetch` (Node 18+) or your bundler’s polyfills, depending on how you call the official OpenAI / Anthropic SDKs.
+The package lists **`openai`** and **`@anthropic-ai/sdk`** as dependencies so the built-in adapters work after a normal install. You only need API keys for the provider you use.
+
+---
 
 ## Quick start
 
@@ -52,38 +94,51 @@ if (result.success) {
 }
 ```
 
-## API reference
+---
+
+## Package exports (at a glance)
+
+| Export | Role |
+|--------|------|
+| `query` | Main API: run a schema-guided request. |
+| `defineSchema` | Typed pass-through for schema literals. |
+| `createOpenAIProvider`, `createAnthropicProvider`, `createCustomProvider` | Ready-made `LLMProvider` implementations. |
+| `LLMProvider`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryResult`, `QueryLogger`, `ValidationError` | TypeScript types. |
+| `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError` | Error classes (see [Errors](#errors-and-exceptions)). |
+
+---
+
+## Core API
 
 ### `query<T>(options: QueryOptions): Promise<QueryResult<T>>`
 
-Main entry point. Builds schema-aware prompts, calls `provider.complete`, runs JSON extraction, optional coercion, validation, and retries on failure.
+Runs the full pipeline. **`T`** is the expected shape of the root JSON object (defaults to `Record<string, unknown>`).
 
-- **Generic `T`** — Expected shape of the parsed root object (defaults to `Record<string, unknown>`).
+### `defineSchema<S extends Schema>(schema: S): S`
 
-### `defineSchema(schema: Schema): Schema`
-
-Identity helper typed as `defineSchema<S extends Schema>(schema: S): S`. Use it so schema literals stay well-typed and your editor can autocomplete field keys.
+Use this when declaring schemas so keys and nesting stay well-typed in your editor.
 
 ### `QueryOptions`
 
 | Field | Type | Description |
 |--------|------|-------------|
-| `prompt` | `string` | Your task / user instruction (the library appends JSON-only and schema instructions). |
-| `schema` | `Schema` | Root object schema: map of field names to `FieldSchema`. |
+| `prompt` | `string` | Your task; the library appends JSON-only and schema instructions. |
+| `schema` | `Schema` | Root object: map of field names to `FieldSchema`. |
 | `provider` | `LLMProvider` | Must implement `complete(prompt: string): Promise<string>`. |
-| `maxRetries` | `number?` | **Default `3`.** Total number of provider calls per `query` (at least **1**). |
-| `coerce` | `boolean?` | **Default `true`.** Run type coercion (e.g. `"42"` → number) before validation. |
-| `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail but a root object was parsed and coerced, return that object with `success: false` instead of throwing. |
-| `debug` | `boolean?` | **Default `false`.** Log each attempt, raw response, and validation / parse issues to the console. |
+| `maxRetries` | `number?` | **Default `3`.** Maximum **total** attempts (each attempt is one `complete` call). Minimum `1`. |
+| `coerce` | `boolean?` | **Default `true`.** Coerce common mismatches before validation (see [Coercion](#coercion)). |
+| `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail validation but a root object was parsed and coerced, return that object with `success: false` instead of throwing. |
+| `debug` | `boolean?` | **Default `false`.** Log diagnostics to `console` when `logger` is not set. |
+| `logger` | `QueryLogger?` | If set, diagnostic messages go to `logger.debug` instead of `console`. Prefer this in production to control log sinks and redaction. |
 
 ### `QueryResult<T>`
 
 | Field | Type | Description |
 |--------|------|-------------|
-| `data` | `T` | Last successful or fallback payload (when applicable). |
-| `success` | `boolean` | `true` if validation passed at least once. |
-| `attempts` | `number` | Number of provider calls used (success) or max attempts (failure / partial). |
-| `errors` | `string[]` | Human-readable messages for every failed attempt (empty when `success` is `true`). |
+| `data` | `T` | When `success: true`, the validated root object. When `success: false` with `fallbackToPartial: true`, the last coerced root object (still failing validation). |
+| `success` | `boolean` | `true` if validation passed on some attempt. |
+| `attempts` | `number` | How many `complete` calls were made. |
+| `errors` | `string[]` | Human-readable messages for failed attempts; empty when `success` is `true`. |
 
 ### `FieldSchema`
 
@@ -91,16 +146,28 @@ Identity helper typed as `defineSchema<S extends Schema>(schema: S): S`. Use it 
 |--------|------|-------------|
 | `type` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'` | Expected JSON type after coercion. |
 | `required` | `boolean` | If `true`, value must be present and not `null` / `undefined`. |
-| `format` | `'email' \| 'url' \| 'date'?` | For `type: 'string'` only: extra checks (see [Schema guide](#schema-definition-guide)). |
-| `default` | `unknown?` | Used during coercion when the field is missing or `null` / `undefined`. |
+| `format` | `'email' \| 'url' \| 'date'?` | For `type: 'string'` only (see [Schema guide](#schema-definition-guide)). |
+| `default` | `unknown?` | Applied during coercion when the field is missing or nullish. |
 | `description` | `string?` | Included in prompts to steer the model. |
 | `properties` | `Schema?` | For `type: 'object'`, nested fields. |
-| `itemType` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'?` | For `type: 'array'`, uniform element type. |
-| `itemProperties` | `Schema?` | For `type: 'array'` with `itemType: 'object'`, schema per array element. |
+| `itemType` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'?` | For `type: 'array'`, element type. |
+| `itemProperties` | `Schema?` | For `type: 'array'` with `itemType: 'object'`, schema per element. |
 
-Root JSON must be a **plain object** (not a bare array or primitive).
+The root value must be a **plain object** (not a bare array or primitive).
 
-## Provider setup
+---
+
+## Errors and exceptions
+
+| Error | When |
+|--------|------|
+| `ProviderError` | `provider.complete()` throws (network, SDK, HTTP). **Not** retried — the error propagates immediately. |
+| `QueryRetriesExhaustedError` | All attempts failed validation (or could not yield a valid root object), `fallbackToPartial` is `false` or there was nothing to return. Carries `attempts`, `collectedErrors`, and `lastRawSnippet`. |
+| `JSONExtractionError` | Used internally when parsing JSON from text; during `query()`, failed extractions trigger **retries** instead of surfacing this class directly. |
+
+---
+
+## Built-in providers
 
 ### OpenAI (Chat Completions)
 
@@ -118,7 +185,7 @@ await query({
 });
 ```
 
-`createOpenAIProvider(apiKey, model?)` — default model: `gpt-4o`.
+- **`createOpenAIProvider(apiKey, model?)`** — Default model: **`gpt-4o`**.
 
 ### Anthropic (Messages API)
 
@@ -140,7 +207,7 @@ await query({
 });
 ```
 
-`createAnthropicProvider(apiKey, model?)` — default model: `claude-sonnet-4-20250514`.
+- **`createAnthropicProvider(apiKey, model?)`** — Default model: **`claude-sonnet-4-20250514`**.
 
 ### Custom (any async function)
 
@@ -166,24 +233,47 @@ await query({
 });
 ```
 
+### Implementing `LLMProvider` yourself
+
+Return the **raw model text** (the library extracts JSON). You can pass an object directly or use `createCustomProvider`:
+
+```typescript
+import type { LLMProvider } from 'llm-schema-validator';
+
+const myProvider: LLMProvider = {
+  async complete(prompt) {
+    const out = await callYourSdk(prompt);
+    return out;
+  },
+};
+
+await query({ prompt: '…', schema, provider: myProvider });
+```
+
+```typescript
+const provider = createCustomProvider((prompt) => myClient.complete({ input: prompt }));
+```
+
+---
+
 ## Schema definition guide
 
-**Root** — A `Schema` is `Record<string, FieldSchema>`: top-level keys are your JSON object properties.
+**Root** — `Schema` is `Record<string, FieldSchema>`: top-level keys are your JSON object properties.
 
 **Types**
 
 - **`string`** — `typeof === 'string'`.
-- **`number`** — Finite numbers (`NaN` fails validation).
+- **`number`** — Finite numbers (`NaN` fails).
 - **`boolean`** — Strict booleans.
-- **`array`** — `Array.isArray`. Use `itemType` to require homogeneous primitives or `'object'`. With `itemType: 'object'`, set `itemProperties` to validate each element object.
-- **`object`** — Plain objects only (not arrays). Set `properties` for nested validation.
+- **`array`** — `Array.isArray`. Use `itemType` for homogeneous elements; with `itemType: 'object'`, set `itemProperties`.
+- **`object`** — Plain objects only (not arrays). Use `properties` for nested fields.
 
-**Formats** (`type: 'string'` + `format`)
+**String formats** (`type: 'string'` + `format`)
 
 | `format` | Rule |
 |----------|------|
-| `email` | String contains both `@` and `.`. |
-| `url` | String starts with `http` (e.g. `https://…`). |
+| `email` | Contains both `@` and `.`. |
+| `url` | Starts with `http` (e.g. `https://…`). |
 | `date` | `new Date(value)` is valid (finite timestamp). |
 
 **Nested object**
@@ -217,11 +307,13 @@ const schema = defineSchema({
 });
 ```
 
+---
+
 ## Advanced usage
 
 ### Retries
 
-Set `maxRetries` to control how many **total** provider calls are allowed (default `3`). On failure, the library sends a correction prompt that includes your original task, the previous raw reply, and structured validation errors.
+`maxRetries` is the **maximum number of `complete` calls** (default **`3`**). Each retry sends a correction prompt with your original task, the previous raw reply, and validation errors.
 
 ```typescript
 await query({
@@ -234,7 +326,7 @@ await query({
 
 ### Coercion
 
-With `coerce: true` (default), common LLM quirks are fixed before validation, for example numeric strings → numbers, `"true"` / `"false"` → booleans, numbers → strings when the field is `string`, JSON array strings → arrays, and defaults applied for missing nullable fields. Set `coerce: false` to require strict JSON types as returned by the model.
+With `coerce: true` (default), common quirks are fixed before validation (for example numeric strings → numbers, `"true"` / `"false"` → booleans, JSON array strings → arrays, and `default` values for missing fields). Use `coerce: false` to require strict JSON types from the model.
 
 ```typescript
 await query({ prompt: '…', schema, provider, coerce: false });
@@ -242,7 +334,7 @@ await query({ prompt: '…', schema, provider, coerce: false });
 
 ### `fallbackToPartial`
 
-If every attempt fails validation but the last response could be parsed to a root object and coerced, returning that object may still be useful for logging or manual repair.
+If every attempt fails validation but the last response could be parsed to a root object and coerced, you can still read `data` for logging or manual repair:
 
 ```typescript
 const result = await query({ prompt: '…', schema, provider, fallbackToPartial: true });
@@ -252,9 +344,9 @@ if (!result.success) {
 }
 ```
 
-If parsing never produced a suitable object, the library still throws.
+If no suitable root object was ever parsed, the library **throws** `QueryRetriesExhaustedError` (same as when `fallbackToPartial` is `false`).
 
-### Debug mode
+### Debug and `logger`
 
 ```typescript
 await query({
@@ -265,35 +357,39 @@ await query({
 });
 ```
 
-Logs attempt numbers, raw model output, and parse/validation diagnostics to the console (useful in development; avoid in production with sensitive data).
-
-## How to create a custom provider for any LLM
-
-Implement the `LLMProvider` interface: a single method `complete(prompt: string): Promise<string>` that returns the **raw** model text (the library will extract JSON). Then pass it to `createCustomProvider` or use the object directly:
+Prefer a **`logger`** in production so you can route logs and avoid leaking prompts or responses:
 
 ```typescript
-import type { LLMProvider } from 'llm-schema-validator';
-
-const myProvider: LLMProvider = {
-  async complete(prompt) {
-    const out = await callYourSdk(prompt);
-    return out;
-  },
-};
-
-await query({ prompt: '…', schema, provider: myProvider });
+await query({
+  prompt: '…',
+  schema,
+  provider,
+  logger: { debug: (msg, ...args) => myLogger.debug(msg, args) },
+});
 ```
 
-Use `createCustomProvider` when you already have an async `(prompt) => string` function:
-
-```typescript
-const provider = createCustomProvider((prompt) => myClient.complete({ input: prompt }));
-```
+---
 
 ## Contributing
 
-Issues and pull requests are welcome. When changing behavior, update tests or add examples in the README as appropriate. Please run `npm run build` and ensure TypeScript compiles before submitting.
+Issues and pull requests are welcome. For behavior changes, add or update tests and README examples. Run `npm run build`, `npm test`, and `npm run lint` before submitting.
+
+---
+
+## Security and abuse
+
+Report security vulnerabilities through [GitHub Security Advisories](https://github.com/ashwinpaulallen/llm-schema-validator/security/advisories/new) instead of public issues.
+
+---
 
 ## License
 
-MIT
+[MIT](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/LICENSE)
+
+---
+
+## Links
+
+- [npm package](https://www.npmjs.com/package/llm-schema-validator)
+- [GitHub repository](https://github.com/ashwinpaulallen/llm-schema-validator)
+- [Issue tracker](https://github.com/ashwinpaulallen/llm-schema-validator/issues)

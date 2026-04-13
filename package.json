@@ -1,7 +1,7 @@
 {
   "name": "llm-schema-validator",
   "version": "1.0.0",
-  "description": "Validate structured outputs from LLMs against JSON Schema.",
+  "description": "Structured LLM outputs with a TypeScript field schema: parse, coerce, validate, and retry. OpenAI, Anthropic, and custom providers.",
   "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
