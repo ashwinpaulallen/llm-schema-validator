@@ -1,0 +1,65 @@
+{
+  "name": "llm-schema-validator",
+  "version": "1.0.0",
+  "description": "Validate structured outputs from LLMs against JSON Schema.",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "ts-node src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\""
+  },
+  "keywords": [
+    "llm",
+    "ai",
+    "json",
+    "validation",
+    "openai",
+    "anthropic",
+    "structured output",
+    "schema"
+  ],
+  "author": "Ashwin Paul Allen",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ashwinpaulallen/llm-schema-validator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ashwinpaulallen/llm-schema-validator/issues"
+  },
+  "homepage": "https://github.com/ashwinpaulallen/llm-schema-validator#readme",
+  "funding": "https://github.com/sponsors/ashwinpaulallen",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.6.0",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.58.1",
+    "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "openai": "^6.34.0"
+  }
+}
