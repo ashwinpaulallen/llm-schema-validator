@@ -1,29 +1,37 @@
-import { combineSignals, raceWithSignal } from './abort.js';
+import { combineSignals, delayWithAbort, raceWithSignal } from './abort.js';
 import {
   LOG_PREFIX,
   MAX_FINAL_ERROR_RAW_LENGTH,
   MAX_PARSE_ERROR_RAW_LENGTH,
 } from './constants.js';
 import { QueryRetriesExhaustedError, ProviderError } from './errors.js';
-import { coerce } from './coercer.js';
-import { buildInitialPrompt, buildRetryPrompt } from './prompt-builder.js';
+import { coerce, coerceRootArray } from './coercer.js';
+import { buildInitialPrompt, buildRetryPrompt, type RootPromptShape } from './prompt-builder.js';
 import { extractJSON } from './parser.js';
-import type { QueryOptions, QueryResult, ValidationError } from './types.js';
+import type {
+  FieldSchema,
+  QueryArrayOptions,
+  QueryObjectOptions,
+  QueryOptions,
+  QueryResult,
+  Schema,
+  ValidationError,
+} from './types.js';
 import { isPlainObject } from './utils.js';
-import { validate } from './validator.js';
+import { validate, validateRootArray } from './validator.js';
 
-function parseFailureErrors(message: string, raw: string): ValidationError[] {
+function parseFailureErrors(message: string, raw: string, root: 'object' | 'array'): ValidationError[] {
   return [
     {
       field: '(parse)',
-      expected: 'single JSON object',
+      expected: root === 'object' ? 'single JSON object' : 'single JSON array',
       received: raw.length > MAX_PARSE_ERROR_RAW_LENGTH ? `${raw.slice(0, MAX_PARSE_ERROR_RAW_LENGTH)}…` : raw,
       message,
     },
   ];
 }
 
-function rootTypeError(parsed: unknown): ValidationError[] {
+function rootObjectTypeError(parsed: unknown): ValidationError[] {
   const received =
     parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed;
   return [
@@ -34,6 +42,39 @@ function rootTypeError(parsed: unknown): ValidationError[] {
       message: '[llm-schema-validator] Root value must be a plain JSON object (not an array or primitive).',
     },
   ];
+}
+
+function rootArrayTypeError(parsed: unknown): ValidationError[] {
+  const received =
+    parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed;
+  return [
+    {
+      field: '(root)',
+      expected: 'array',
+      received,
+      message: '[llm-schema-validator] Root value must be a JSON array (not an object or primitive).',
+    },
+  ];
+}
+
+function isArrayRootQuery(
+  options: QueryOptions,
+): options is QueryArrayOptions<FieldSchema & { type: 'array' }> {
+  return options.rootType === 'array';
+}
+
+function rootShapeFromOptions(options: QueryOptions): RootPromptShape {
+  if (isArrayRootQuery(options)) {
+    return { kind: 'array', arraySchema: options.arraySchema };
+  }
+  return { kind: 'object', schema: options.schema };
+}
+
+function effectiveRetryBackoffMultiplier(options: QueryOptions): number {
+  const m = options.retryBackoffMultiplier;
+  if (m === undefined) return 2;
+  if (!Number.isFinite(m) || m < 1) return 1;
+  return m;
 }
 
 function createDiagLog(options: QueryOptions): (msg: string, ...args: unknown[]) => void {
@@ -47,36 +88,77 @@ function createDiagLog(options: QueryOptions): (msg: string, ...args: unknown[])
   return () => {};
 }
 
+function formatValidationAttemptErrors(errors: ValidationError[]): string[] {
+  return errors.map(
+    (err) =>
+      `field "${err.field}" — ${err.message} (expected ${err.expected}; received ${err.received})`,
+  );
+}
+
+function notifyAttempt(
+  options: QueryOptions,
+  attempt: number,
+  errors: string[],
+): void {
+  options.onAttempt?.(attempt, errors);
+}
+
 /**
  * Run the LLM with schema-aware prompts, parse/coerce/validate, and retry on failure.
  */
 export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryResult<T>> {
+  if (isArrayRootQuery(options)) {
+    const a = options.arraySchema;
+    if (!a || a.type !== 'array') {
+      throw new TypeError(
+        '[llm-schema-validator] rootType "array" requires arraySchema with type: "array"',
+      );
+    }
+  }
+
   const maxAttempts = Math.max(1, options.maxRetries ?? 3);
   const coerceEnabled = options.coerce ?? true;
   const fallbackToPartial = options.fallbackToPartial ?? false;
   const log = createDiagLog(options);
+  const retryDelayBase =
+    options.retryDelayMs !== undefined && options.retryDelayMs > 0 ? options.retryDelayMs : undefined;
+  const backoffMult = effectiveRetryBackoffMultiplier(options);
+
+  const rootShape = rootShapeFromOptions(options);
+  const isArrayRoot = rootShape.kind === 'array';
+  const arraySchema = isArrayRoot ? rootShape.arraySchema : undefined;
 
   const allErrors: string[] = [];
-  let prompt = buildInitialPrompt(options.prompt, options.schema);
-  let lastCoerced: Record<string, unknown> | null = null;
+  let prompt = buildInitialPrompt(options.prompt, rootShape);
+  let lastCoerced: Record<string, unknown> | unknown[] | null = null;
   let lastRaw = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1 && retryDelayBase !== undefined) {
+      const waitMs = retryDelayBase * Math.pow(backoffMult, attempt - 2);
+      log(`retry backoff ${waitMs}ms before attempt ${attempt}`);
+      await delayWithAbort(waitMs, options.signal);
+    }
     log(`attempt ${attempt}/${maxAttempts}`);
 
     let raw: string;
     try {
       const attemptSignal = combineSignals(options.signal, options.providerTimeoutMs);
-      const task = options.provider.complete(
-        prompt,
-        attemptSignal !== undefined ? { signal: attemptSignal } : undefined,
-      );
+      const completeInit =
+        attemptSignal === undefined && options.systemPrompt === undefined
+          ? undefined
+          : {
+              ...(attemptSignal !== undefined ? { signal: attemptSignal } : {}),
+              ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+            };
+      const task = options.provider.complete(prompt, completeInit);
       raw = await raceWithSignal(task, attemptSignal);
     } catch (e) {
       const wrapped = new ProviderError(
         `provider.complete() failed: ${e instanceof Error ? e.message : String(e)}`,
         e,
       );
+      notifyAttempt(options, attempt, [wrapped.message]);
       allErrors.push(`Attempt ${attempt}: ${wrapped.message}`);
       throw wrapped;
     }
@@ -89,42 +171,92 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       parsed = extractJSON(raw);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      allErrors.push(`Attempt ${attempt}: could not extract JSON — ${msg}`);
+      const parseErr = `could not extract JSON — ${msg}`;
+      notifyAttempt(options, attempt, [parseErr]);
+      allErrors.push(`Attempt ${attempt}: ${parseErr}`);
       log('extractJSON error:', msg);
 
       if (attempt < maxAttempts) {
         prompt = buildRetryPrompt(
           options.prompt,
-          options.schema,
+          rootShape,
           raw,
-          parseFailureErrors(msg, raw),
+          parseFailureErrors(msg, raw, isArrayRoot ? 'array' : 'object'),
         );
+      }
+      continue;
+    }
+
+    if (isArrayRoot) {
+      if (!Array.isArray(parsed)) {
+        const msg =
+          '[llm-schema-validator] Root value must be a JSON array (not an object or primitive).';
+        notifyAttempt(options, attempt, [msg]);
+        allErrors.push(`Attempt ${attempt}: ${msg}`);
+        log('validation skipped:', msg);
+        if (attempt < maxAttempts) {
+          prompt = buildRetryPrompt(options.prompt, rootShape, raw, rootArrayTypeError(parsed));
+        }
+        continue;
+      }
+
+      let data: unknown[] = parsed;
+      if (coerceEnabled) {
+        data = coerceRootArray(data, arraySchema!);
+      }
+      lastCoerced = data;
+
+      const validationErrors = validateRootArray(data, arraySchema!);
+
+      if (validationErrors.length === 0) {
+        log('validation: ok');
+      } else {
+        log('validation errors:', validationErrors);
+      }
+
+      if (validationErrors.length === 0) {
+        notifyAttempt(options, attempt, []);
+        return {
+          data: data as T,
+          success: true,
+          attempts: attempt,
+          errors: [],
+        };
+      }
+
+      notifyAttempt(options, attempt, formatValidationAttemptErrors(validationErrors));
+
+      for (const err of validationErrors) {
+        allErrors.push(
+          `Attempt ${attempt}: field "${err.field}" — ${err.message} (expected ${err.expected}; received ${err.received})`,
+        );
+      }
+
+      if (attempt < maxAttempts) {
+        prompt = buildRetryPrompt(options.prompt, rootShape, raw, validationErrors);
       }
       continue;
     }
 
     if (!isPlainObject(parsed)) {
       const msg = '[llm-schema-validator] Root value must be a JSON object (not an array or primitive).';
+      notifyAttempt(options, attempt, [msg]);
       allErrors.push(`Attempt ${attempt}: ${msg}`);
       log('validation skipped:', msg);
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(
-          options.prompt,
-          options.schema,
-          raw,
-          rootTypeError(parsed),
-        );
+        prompt = buildRetryPrompt(options.prompt, rootShape, raw, rootObjectTypeError(parsed));
       }
       continue;
     }
 
+    const objectSchema = (options as QueryObjectOptions<Schema>).schema;
     let data: Record<string, unknown> = parsed;
     if (coerceEnabled) {
-      data = coerce(data, options.schema);
+      data = coerce(data, objectSchema);
     }
     lastCoerced = data;
 
-    const validationErrors = validate(data, options.schema);
+    const validationErrors = validate(data, objectSchema);
 
     if (validationErrors.length === 0) {
       log('validation: ok');
@@ -133,6 +265,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     if (validationErrors.length === 0) {
+      notifyAttempt(options, attempt, []);
       return {
         data: data as T,
         success: true,
@@ -141,6 +274,8 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       };
     }
 
+    notifyAttempt(options, attempt, formatValidationAttemptErrors(validationErrors));
+
     for (const err of validationErrors) {
       allErrors.push(
         `Attempt ${attempt}: field "${err.field}" — ${err.message} (expected ${err.expected}; received ${err.received})`,
@@ -148,12 +283,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     if (attempt < maxAttempts) {
-      prompt = buildRetryPrompt(
-        options.prompt,
-        options.schema,
-        raw,
-        validationErrors,
-      );
+      prompt = buildRetryPrompt(options.prompt, rootShape, raw, validationErrors);
     }
   }
 

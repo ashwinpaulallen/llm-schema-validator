@@ -91,3 +91,26 @@ function normalizeAbortReason(reason: unknown): Error {
   e.name = 'AbortError';
   return e;
 }
+
+/**
+ * Wait up to `ms` milliseconds, or reject if `signal` aborts first.
+ */
+export function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(normalizeAbortReason(signal.reason));
+      return;
+    }
+    const id = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(id);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      reject(normalizeAbortReason(signal?.reason));
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}

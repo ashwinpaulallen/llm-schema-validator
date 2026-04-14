@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    pool: 'forks',
+    // `threads` is faster; switch to `forks` if tests need process isolation.
+    pool: 'threads',
   },
 });

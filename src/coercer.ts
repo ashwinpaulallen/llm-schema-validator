@@ -1,4 +1,5 @@
 import type { FieldSchema, Schema } from './types.js';
+import { isPlainObject } from './utils.js';
 
 function cloneDefault(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
@@ -123,4 +124,38 @@ export function coerce(data: Record<string, unknown>, schema: Schema): Record<st
   }
 
   return out;
+}
+
+function coerceArrayElement(
+  item: unknown,
+  itemType: NonNullable<FieldSchema['itemType']>,
+  itemProperties: Schema | undefined,
+): unknown {
+  switch (itemType) {
+    case 'object':
+      if (!isPlainObject(item)) return item;
+      return itemProperties && Object.keys(itemProperties).length > 0
+        ? coerce(item, itemProperties)
+        : { ...item };
+    case 'string':
+      return coerceString(item);
+    case 'number':
+      return coerceNumber(item);
+    case 'boolean':
+      return coerceBoolean(item);
+    case 'array':
+      return coerceArray(item);
+    default:
+      return item;
+  }
+}
+
+/**
+ * Apply schema-driven coercions to a root JSON array (per-element when `itemType` is set).
+ */
+export function coerceRootArray(data: unknown[], field: FieldSchema & { type: 'array' }): unknown[] {
+  const arr = [...data];
+  const itemType = field.itemType;
+  if (!itemType) return arr;
+  return arr.map((el) => coerceArrayElement(el, itemType, field.itemProperties));
 }

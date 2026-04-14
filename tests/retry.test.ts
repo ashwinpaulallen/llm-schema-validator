@@ -2,13 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderError, QueryRetriesExhaustedError } from '../src/errors.js';
 import { executeWithRetry } from '../src/retry.js';
-import type { QueryOptions } from '../src/types.js';
+import type { QueryObjectOptions, QueryOptions, Schema } from '../src/types.js';
 
-const baseSchema: QueryOptions['schema'] = {
+const baseSchema: Schema = {
   answer: { type: 'number', required: true },
 };
 
-function opts(overrides: Partial<QueryOptions> & { provider: QueryOptions['provider'] }): QueryOptions {
+function opts(
+  overrides: Partial<QueryObjectOptions<Schema>> & { provider: QueryOptions['provider'] },
+): QueryObjectOptions<Schema> {
   return {
     prompt: 'Return JSON with answer 42.',
     schema: baseSchema,
@@ -145,5 +147,138 @@ describe('executeWithRetry', () => {
     const p = executeWithRetry(opts({ provider, signal: controller.signal, maxRetries: 1 }));
     controller.abort();
     await expect(p).rejects.toThrow(ProviderError);
+  });
+
+  it('forwards systemPrompt to provider.complete', async () => {
+    const complete = vi.fn().mockResolvedValue('{"answer": 1}');
+    const provider = { complete };
+    await executeWithRetry(
+      opts({ provider, systemPrompt: 'Only output JSON.', maxRetries: 1 }),
+    );
+    expect(complete).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ systemPrompt: 'Only output JSON.' }),
+    );
+  });
+
+  it('waits retryDelayMs before a subsequent attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = {
+        complete: vi
+          .fn()
+          .mockResolvedValueOnce('{"answer":"x"}')
+          .mockResolvedValueOnce('{"answer": 1}'),
+      };
+      const resultPromise = executeWithRetry(
+        opts({ provider, maxRetries: 3, coerce: false, retryDelayMs: 500 }),
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(provider.complete).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(provider.complete).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+
+      expect(provider.complete).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses exponential delays when retryBackoffMultiplier is default', async () => {
+    const debug = vi.fn();
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"answer":"a"}')
+        .mockResolvedValueOnce('{"answer":"b"}')
+        .mockResolvedValueOnce('{"answer": 1}'),
+    };
+    await executeWithRetry(
+      opts({
+        provider,
+        logger: { debug },
+        maxRetries: 4,
+        coerce: false,
+        retryDelayMs: 100,
+      }),
+    );
+    const backoffCalls = debug.mock.calls
+      .map((c) => c[0] as string)
+      .filter((m) => m.includes('retry backoff'));
+    expect(backoffCalls.some((m) => m.includes('100ms'))).toBe(true);
+    expect(backoffCalls.some((m) => m.includes('200ms'))).toBe(true);
+  });
+
+  it('uses fixed delay when retryBackoffMultiplier is 1', async () => {
+    const debug = vi.fn();
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"answer":"a"}')
+        .mockResolvedValueOnce('{"answer":"b"}')
+        .mockResolvedValueOnce('{"answer": 1}'),
+    };
+    await executeWithRetry(
+      opts({
+        provider,
+        logger: { debug },
+        maxRetries: 4,
+        coerce: false,
+        retryDelayMs: 50,
+        retryBackoffMultiplier: 1,
+      }),
+    );
+    const backoffCalls = debug.mock.calls
+      .map((c) => c[0] as string)
+      .filter((m) => m.includes('retry backoff'));
+    expect(backoffCalls.every((m) => m.includes('50ms'))).toBe(true);
+    expect(backoffCalls.length).toBe(2);
+  });
+
+  it('calls onAttempt with empty errors on success', async () => {
+    const onAttempt = vi.fn();
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"answer": 42}'),
+    };
+    await executeWithRetry(opts({ provider, onAttempt }));
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+    expect(onAttempt).toHaveBeenCalledWith(1, []);
+  });
+
+  it('calls onAttempt per attempt with validation errors then empty on success', async () => {
+    const onAttempt = vi.fn();
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"answer": "bad"}')
+        .mockResolvedValueOnce('{"answer": 1}'),
+    };
+    await executeWithRetry(opts({ provider, maxRetries: 3, coerce: false, onAttempt }));
+    expect(onAttempt).toHaveBeenCalledTimes(2);
+    expect(onAttempt.mock.calls[0]).toEqual([
+      1,
+      [expect.stringContaining('field "answer"')],
+    ]);
+    expect(onAttempt.mock.calls[1]).toEqual([2, []]);
+  });
+
+  it('calls onAttempt before throwing on provider failure', async () => {
+    const onAttempt = vi.fn();
+    const provider = {
+      complete: vi.fn().mockRejectedValue(new Error('network')),
+    };
+    await expect(executeWithRetry(opts({ provider, maxRetries: 1, onAttempt }))).rejects.toThrow(
+      ProviderError,
+    );
+    expect(onAttempt).toHaveBeenCalledWith(1, [expect.stringContaining('network')]);
   });
 });

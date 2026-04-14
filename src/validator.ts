@@ -476,3 +476,19 @@ export function validate(data: Record<string, unknown>, schema: Schema): Validat
   }
   return validateRecord(data, schema, '');
 }
+
+/**
+ * Validate a root JSON array against an array {@link FieldSchema} (`type: 'array'`).
+ */
+export function validateRootArray(
+  data: unknown[],
+  field: FieldSchema & { type: 'array' },
+): ValidationError[] {
+  if (!Array.isArray(data)) {
+    throw new TypeError('[llm-schema-validator] validateRootArray: data must be an array');
+  }
+  const errors: ValidationError[] = [];
+  errors.push(...validateArrayBounds(data, field, '(root)'));
+  errors.push(...validateArrayItems(data, field, '(root)'));
+  return errors;
+}

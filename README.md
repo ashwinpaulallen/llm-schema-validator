@@ -109,39 +109,60 @@ if (result.success) {
 
 | Export | Role |
 |--------|------|
-| `query` | Main API: run a schema-guided request; **`data` is inferred** from `schema` when you use `defineSchema` (see `InferSchema`). |
+| `query` | Main API: run a schema-guided request; **`data` is inferred** from `schema` (object root) or `arraySchema` (array root; see `InferFieldValue`). |
 | `defineSchema` | Keeps schema literals narrow-typed so inference works. |
-| `createOpenAIProvider`, `createAnthropicProvider`, `createCustomProvider` | Ready-made `LLMProvider` implementations. |
+| `validate`, `coerce`, `validateRootArray`, `coerceRootArray` | Standalone validation/coercion (same rules as inside `query`): object roots use `validate`/`coerce`; array roots use `validateRootArray`/`coerceRootArray` with a `type: 'array'` field schema. |
+| `createOpenAIProvider`, `OpenAIProviderOptions`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createCustomProvider` | Ready-made `LLMProvider` implementations and their factory option types. |
 | `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
-| `LLMProvider`, `CompleteOptions`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
+| `LLMProvider`, `CompleteOptions`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
 | `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError` | Error classes (see [Errors](#errors-and-exceptions)). |
+
+**ESM and CommonJS** — The build emits **ESM** under `dist/` (`import` / `"module"`) and **CommonJS** under `dist/cjs/` (`require` / `"main"`). The package root sets `"type": "module"`; `dist/cjs/package.json` sets `"type": "commonjs"` so Node resolves `require('llm-schema-validator')` to the CJS build. Use `import` from the same package name in ESM projects.
 
 ---
 
 ## Core API
 
-### `query(options: QueryOptions<S>): Promise<QueryResult<InferSchema<S>>>`
+### `query(options): Promise<QueryResult<…>>`
 
-Runs the full pipeline. **`QueryResult.data`** is typed as **`InferSchema<S>`** where **`S`** is the type of your **`schema`** option. Use **`defineSchema({ ... })`** so field `type` values stay string literals (`'string'`, `'number'`, …); otherwise TypeScript may widen types and inference weakens.
+Runs the full pipeline.
 
-You can still annotate manually when needed: `InferSchema<typeof mySchema>` or `QueryResult<{ ... }>` via assertion.
+- **Object root (default):** pass **`schema`**. **`QueryResult.data`** is **`InferSchema<S>`** where **`S`** is your schema. Use **`defineSchema({ ... })`** so field `type` values stay string literals (`'string'`, `'number'`, …); otherwise TypeScript may widen types and inference weakens.
+- **Array root:** set **`rootType: 'array'`** and **`arraySchema`** with **`type: 'array'`** (plus `itemType` / `itemProperties`, etc.). **`QueryResult.data`** is **`InferFieldValue<typeof arraySchema>`** (the array of elements).
+
+You can still annotate manually when needed: `InferSchema<typeof mySchema>`, **`InferFieldValue<typeof arraySchema>`**, or `QueryResult<…>` via assertion.
 
 ### `defineSchema<S extends Schema>(schema: S): S`
 
 Use this when declaring schemas so literals stay narrow for **`InferSchema`** and editor autocomplete.
 
+### `validate`, `coerce`, `validateRootArray`, `coerceRootArray`
+
+Use these when you already have parsed JSON (from your own pipeline or another library) and want the same checks as **`query`** without calling an LLM:
+
+- **`validate(data, schema)`** / **`coerce(data, schema)`** — plain **object** `data` and object **`schema`** (throws `TypeError` if `data` is not a plain object).
+- **`validateRootArray(arr, arraySchema)`** / **`coerceRootArray(arr, arraySchema)`** — root **array** `arr` and a **`FieldSchema`** with **`type: 'array'`** (same shape as **`arraySchema`** in **`query`**).
+
+`validate` / `validateRootArray` return a **`ValidationError[]`** (empty when valid). `coerce` / `coerceRootArray` return new values and do not mutate the input.
+
 ### `QueryOptions`
 
 | Field | Type | Description |
 |--------|------|-------------|
-| `prompt` | `string` | Your task; the library appends JSON-only and schema instructions. |
-| `schema` | `Schema` | Root object: map of field names to `FieldSchema`. |
-| `provider` | `LLMProvider` | Must implement `complete(prompt: string, init?: CompleteOptions): Promise<string>` (second argument carries `signal` when timeouts or cancellation are used). |
+| `prompt` | `string` | Your task; the library appends JSON-only and schema instructions into the **user** message. |
+| `systemPrompt` | `string?` | Optional persona / global rules, sent separately (OpenAI **system** role, Anthropic **`system`** parameter), not mixed into `prompt`. |
+| `rootType` | `'object' \| 'array'?` | **Default `'object'.** Top-level JSON is a plain object, or with **`'array'`** a JSON array (e.g. a list of items). |
+| `schema` | `Schema` | **When `rootType` is `'object'` (default):** map of field names to `FieldSchema`. |
+| `arraySchema` | `FieldSchema` | **When `rootType` is `'array'`:** required. Must be **`type: 'array'`**; use `itemType`, `itemProperties`, `minItems` / `maxItems`, etc. |
+| `provider` | `LLMProvider` | Must implement `complete(prompt: string, init?: CompleteOptions): Promise<string>` (`init` may include `signal`, `systemPrompt`). |
 | `maxRetries` | `number?` | **Default `3`.** Maximum **total** attempts (each attempt is one `complete` call). Minimum `1`. |
+| `retryDelayMs` | `number?` | **Default: none (immediate retries).** Base wait before each retry after a failed attempt; use with `retryBackoffMultiplier` for exponential backoff (see [Retries](#retries)). |
+| `retryBackoffMultiplier` | `number?` | **Default `2`** when `retryDelayMs` is set. Per-retry multiplier (`1` = fixed delay every time). |
 | `coerce` | `boolean?` | **Default `true`.** Coerce common mismatches before validation (see [Coercion](#coercion)). |
-| `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail validation but a root object was parsed and coerced, return that object with `success: false` instead of throwing. |
+| `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail validation but a root **object** or **array** was parsed and coerced, return that value with `success: false` instead of throwing. |
 | `debug` | `boolean?` | **Default `false`.** Log diagnostics to `console` when `logger` is not set. |
 | `logger` | `QueryLogger?` | If set, diagnostic messages go to `logger.debug` instead of `console`. Prefer this in production to control log sinks and redaction. |
+| `onAttempt` | `(attempt: number, errors: string[]) => void?` | After each finished **`complete()`**: **`attempt`** is 1-based; **`errors`** is empty on success, otherwise messages for that attempt only (for metrics / custom logging). |
 | `signal` | `AbortSignal?` | Passed to each `provider.complete()` (and merged with `providerTimeoutMs`). Aborting ends the current attempt with an error (same as a failed provider call). |
 | `providerTimeoutMs` | `number?` | **Default: none.** Maximum time in milliseconds for **each** `complete()` call. Prevents hung LLM requests from blocking forever; uses `AbortSignal` and races the promise so `query` returns even if a custom provider ignores cancellation. |
 
@@ -149,7 +170,7 @@ Use this when declaring schemas so literals stay narrow for **`InferSchema`** an
 
 | Field | Type | Description |
 |--------|------|-------------|
-| `data` | `T` | When `success: true`, the validated root object. When `success: false` with `fallbackToPartial: true`, the last coerced root object (still failing validation). |
+| `data` | `T` | When `success: true`, the validated root value (object or array). When `success: false` with `fallbackToPartial: true`, the last coerced root value (still failing validation). |
 | `success` | `boolean` | `true` if validation passed on some attempt. |
 | `attempts` | `number` | How many `complete` calls were made. |
 | `errors` | `string[]` | Human-readable messages for failed attempts; empty when `success` is `true`. |
@@ -170,11 +191,12 @@ Use this when declaring schemas so literals stay narrow for **`InferSchema`** an
 | `format` | `'email' \| 'url' \| 'date'?` | For `type: 'string'` only (see [Schema guide](#schema-definition-guide)). |
 | `default` | `unknown?` | Applied during coercion when the key is missing or the value is nullish (unless `nullable` preserves `null`). |
 | `description` | `string?` | Included in prompts to steer the model. |
+| `examples` | `string[]?` | Example values shown in the schema outline (hints for the model). **Not** validated — use `enum` for strict allowed values. |
 | `properties` | `Schema?` | For `type: 'object'`, nested fields. |
 | `itemType` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'?` | For `type: 'array'`, element type. |
 | `itemProperties` | `Schema?` | For `type: 'array'` with `itemType: 'object'`, schema per element. |
 
-The root value must be a **plain object** (not a bare array or primitive).
+By default the root value must be a **plain object** (not a bare array or primitive). With **`rootType: 'array'`** and **`arraySchema`**, the root must be a **JSON array** whose elements match that schema (same rules as `type: 'array'` on a field).
 
 ---
 
@@ -183,7 +205,7 @@ The root value must be a **plain object** (not a bare array or primitive).
 | Error | When |
 |--------|------|
 | `ProviderError` | `provider.complete()` throws (network, SDK, HTTP). **Not** retried — the error propagates immediately. |
-| `QueryRetriesExhaustedError` | All attempts failed validation (or could not yield a valid root object), `fallbackToPartial` is `false` or there was nothing to return. Carries `attempts`, `collectedErrors`, and `lastRawSnippet`. |
+| `QueryRetriesExhaustedError` | All attempts failed validation (or could not yield a valid root object/array), `fallbackToPartial` is `false` or there was nothing to return. Carries `attempts`, `collectedErrors`, and `lastRawSnippet`. |
 | `JSONExtractionError` | Used internally when parsing JSON from text; during `query()`, failed extractions trigger **retries** instead of surfacing this class directly. |
 
 ---
@@ -206,7 +228,7 @@ await query({
 });
 ```
 
-- **`createOpenAIProvider(apiKey, model?)`** — Default model: **`gpt-4o`**.
+- **`createOpenAIProvider(apiKey, model?, options?)`** — Default model: **`gpt-4o`**. **`response_format: { type: 'json_object' }`** is applied by default (OpenAI JSON mode) to reduce invalid JSON; override with **`response_format: { type: 'text' }`** if the model does not support JSON mode. Other **`options`** fields: **`temperature`**, **`top_p`**, **`seed`**, **`response_format`** (or pass **`options` alone as the second argument**).
 
 ### Anthropic (Messages API)
 
@@ -214,7 +236,7 @@ await query({
 import { createAnthropicProvider, query, defineSchema } from 'llm-schema-validator';
 
 const provider = createAnthropicProvider(process.env.ANTHROPIC_API_KEY!, {
-  model: 'claude-sonnet-4-20250514',
+  model: 'claude-sonnet-4-6',
   maxTokens: 4096,
 });
 
@@ -229,7 +251,7 @@ await query({
 ```
 
 - **`createAnthropicProvider(apiKey, model?)`** — Second argument can be a **model id string** (same as before).
-- **`createAnthropicProvider(apiKey, options?)`** — **`options.model`** (default **`claude-sonnet-4-20250514`**) and **`options.maxTokens`** (default **`8192`**, maps to Anthropic `max_tokens`). Use a higher value for long generations (e.g. large Opus outputs) or lower for short JSON-only replies.
+- **`createAnthropicProvider(apiKey, options?)`** — **`options.model`** (default **`claude-sonnet-4-6`**, Anthropic’s current Sonnet alias) and **`options.maxTokens`** (default **`8192`**, maps to Anthropic `max_tokens`). Also supports **`temperature`**, **`top_p`**, **`top_k`**, **`seed`**, and **`stop_sequences`**, passed through to `messages.create`.
 
 ### Custom (any async function)
 
@@ -264,12 +286,15 @@ import type { LLMProvider } from 'llm-schema-validator';
 
 const myProvider: LLMProvider = {
   async complete(prompt, init) {
-    const out = await callYourSdk(prompt, { signal: init?.signal });
+    const out = await callYourSdk(prompt, {
+      signal: init?.signal,
+      system: init?.systemPrompt,
+    });
     return out;
   },
 };
 
-await query({ prompt: '…', schema, provider: myProvider });
+await query({ prompt: '…', schema, provider: myProvider, systemPrompt: 'You only output valid JSON.' });
 ```
 
 ```typescript
@@ -280,7 +305,25 @@ const provider = createCustomProvider((prompt) => myClient.complete({ input: pro
 
 ## Schema definition guide
 
-**Root** — `Schema` is `Record<string, FieldSchema>`: top-level keys are your JSON object properties.
+**Root (object)** — `Schema` is `Record<string, FieldSchema>`: top-level keys are your JSON object properties.
+
+**Root (array)** — Set **`rootType: 'array'`** and pass **`arraySchema`** with **`type: 'array'`**, **`required: true`**, and **`itemType`** / **`itemProperties`** as needed. The model is asked for **one JSON array** at the top level.
+
+```typescript
+await query({
+  prompt: 'Return a list of tags.',
+  rootType: 'array',
+  arraySchema: {
+    type: 'array',
+    required: true,
+    itemType: 'string',
+    minItems: 1,
+  },
+  provider,
+});
+```
+
+**OpenAI note:** Chat Completions **`response_format: { type: 'json_object' }`** (the default in **`createOpenAIProvider`**) requires a top-level JSON **object**, not a bare array. For **`rootType: 'array'`**, pass **`response_format: { type: 'text' }`** in the provider options (or use a model/provider that accepts array-shaped JSON).
 
 **Types**
 
@@ -298,7 +341,7 @@ const provider = createCustomProvider((prompt) => myClient.complete({ input: pro
 | `url` | Parses as an absolute **`http:`** or **`https:`** URL with a non-empty host (WHATWG `URL`). |
 | `date` | **Calendar date only:** `YYYY-MM-DD` (UTC), with a real calendar day (rejects e.g. `2024-02-30`). Not arbitrary strings accepted by `Date.parse`. |
 
-**Other constraints** — See the [`FieldSchema`](#fieldschema) table: `enum`, `minimum` / `maximum`, `integer`, `minLength` / `maxLength`, `pattern`, `minItems` / `maxItems`, `nullable`. Optional fields may be omitted; if the key is present with `null`, set `nullable: true` or validation fails.
+**Other constraints** — See the [`FieldSchema`](#fieldschema) table: `enum`, `minimum` / `maximum`, `integer`, `minLength` / `maxLength`, `pattern`, `minItems` / `maxItems`, `nullable`. The **`examples`** field only affects prompts (suggested vocabulary), not validation. Optional fields may be omitted; if the key is present with `null`, set `nullable: true` or validation fails.
 
 **Nested object**
 
@@ -339,12 +382,25 @@ const schema = defineSchema({
 
 `maxRetries` is the **maximum number of `complete` calls** (default **`3`**). Each retry sends a correction prompt with your original task, the previous raw reply, and validation errors.
 
+Optional **`retryDelayMs`** adds a wait before starting each retry (after the first attempt), which helps avoid hammering rate limits. Delays grow by **`retryBackoffMultiplier`** each time (default **`2`**, i.e. exponential backoff). Use **`retryBackoffMultiplier: 1`** for a constant delay between every retry.
+
 ```typescript
 await query({
   prompt: '…',
   schema,
   provider,
   maxRetries: 5,
+});
+```
+
+```typescript
+await query({
+  prompt: '…',
+  schema,
+  provider,
+  maxRetries: 6,
+  retryDelayMs: 400,
+  // retryBackoffMultiplier: 2, // default: 400ms, 800ms, 1600ms, …
 });
 ```
 
