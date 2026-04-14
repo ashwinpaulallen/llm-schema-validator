@@ -1,3 +1,4 @@
+import { combineSignals, raceWithSignal } from './abort.js';
 import {
   LOG_PREFIX,
   MAX_FINAL_ERROR_RAW_LENGTH,
@@ -65,7 +66,12 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
 
     let raw: string;
     try {
-      raw = await options.provider.complete(prompt);
+      const attemptSignal = combineSignals(options.signal, options.providerTimeoutMs);
+      const task = options.provider.complete(
+        prompt,
+        attemptSignal !== undefined ? { signal: attemptSignal } : undefined,
+      );
+      raw = await raceWithSignal(task, attemptSignal);
     } catch (e) {
       const wrapped = new ProviderError(
         `provider.complete() failed: ${e instanceof Error ? e.message : String(e)}`,

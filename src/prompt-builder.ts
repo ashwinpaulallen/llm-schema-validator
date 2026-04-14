@@ -28,6 +28,24 @@ function describeField(name: string, field: FieldSchema, depth: number): string[
   const tail: string[] = [];
 
   if (field.format) tail.push(`fmt=${field.format}`);
+  if (field.nullable) tail.push('nullable');
+  if (field.enum && field.enum.length > 0) {
+    tail.push(`enum=${field.enum.map((v) => JSON.stringify(v)).join('|')}`);
+  }
+  if (field.type === 'number') {
+    if (field.integer) tail.push('integer');
+    if (field.minimum !== undefined) tail.push(`min=${field.minimum}`);
+    if (field.maximum !== undefined) tail.push(`max=${field.maximum}`);
+  }
+  if (field.type === 'string') {
+    if (field.minLength !== undefined) tail.push(`minLen=${field.minLength}`);
+    if (field.maxLength !== undefined) tail.push(`maxLen=${field.maxLength}`);
+    if (field.pattern) tail.push(`pattern=${trunc(field.pattern, 40)}`);
+  }
+  if (field.type === 'array') {
+    if (field.minItems !== undefined) tail.push(`minItems=${field.minItems}`);
+    if (field.maxItems !== undefined) tail.push(`maxItems=${field.maxItems}`);
+  }
   if (field.description) {
     tail.push(`"${trunc(field.description, MAX_DESCRIPTION_LENGTH)}"`);
   }

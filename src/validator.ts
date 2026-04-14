@@ -6,39 +6,82 @@ function issue(field: string, expected: string, received: unknown, message: stri
   return { field, expected, received: toLabel(received), message };
 }
 
+/** Lightweight email check: single `@`, non-empty local/domain, domain has labels and a TLD ≥2 chars. Not full RFC 5322. */
+function isPlausibleEmail(value: string): boolean {
+  if (value !== value.trim()) return false;
+  if (/[\s]/.test(value)) return false;
+  const at = value.indexOf('@');
+  if (at <= 0) return false;
+  if (value.indexOf('@', at + 1) !== -1) return false;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (!local || !domain) return false;
+  if (domain.includes('..') || domain.startsWith('.') || domain.endsWith('.')) return false;
+  if (!domain.includes('.')) return false;
+  const labels = domain.split('.');
+  if (labels.some((l) => l.length === 0)) return false;
+  const tld = labels[labels.length - 1]!;
+  return tld.length >= 2;
+}
+
 function validateEmail(value: string, path: string): ValidationError[] {
-  if (value.includes('@') && value.includes('.')) return [];
+  if (isPlausibleEmail(value)) return [];
   return [
     issue(
       path,
-      'string matching email format (must contain @ and .)',
+      'string in a simple email shape (local@domain.tld)',
       value,
-      `[llm-schema-validator] Field "${path}" must be a string containing "@" and "."`,
+      `[llm-schema-validator] Field "${path}" must look like a valid email (e.g. name@example.com)`,
     ),
   ];
+}
+
+/** `http:` or `https:` URL with a host (uses the WHATWG URL parser). */
+function isHttpOrHttpsUrl(value: string): boolean {
+  if (value !== value.trim()) return false;
+  try {
+    const u = new URL(value);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function validateUrl(value: string, path: string): ValidationError[] {
-  if (value.startsWith('http')) return [];
+  if (isHttpOrHttpsUrl(value)) return [];
   return [
     issue(
       path,
-      'string with URL starting with "http"',
+      'absolute http(s) URL (e.g. https://example.com/path)',
       value,
-      `[llm-schema-validator] Field "${path}" must be a string starting with "http"`,
+      `[llm-schema-validator] Field "${path}" must be a valid http(s) URL`,
     ),
   ];
 }
 
+const ISO_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Calendar date `YYYY-MM-DD` (UTC), rejects ambiguous `Date.parse` inputs like `"2"`. */
+function isIsoCalendarDate(value: string): boolean {
+  if (value !== value.trim()) return false;
+  const m = value.match(ISO_DATE_ONLY);
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
 function validateDate(value: string, path: string): ValidationError[] {
-  const d = new Date(value);
-  if (!Number.isNaN(d.getTime())) return [];
+  if (isIsoCalendarDate(value)) return [];
   return [
     issue(
       path,
-      'string parseable as a date',
+      'calendar date string YYYY-MM-DD',
       value,
-      `[llm-schema-validator] Field "${path}" must be a date string parseable by the Date constructor`,
+      `[llm-schema-validator] Field "${path}" must be a calendar date in YYYY-MM-DD form`,
     ),
   ];
 }
@@ -60,9 +103,162 @@ function validateStringFormat(
   }
 }
 
+const patternRegexCache = new Map<string, RegExp | null>();
+
+function compilePattern(source: string): RegExp | null {
+  const hit = patternRegexCache.get(source);
+  if (hit !== undefined) return hit;
+  try {
+    const r = new RegExp(source);
+    patternRegexCache.set(source, r);
+    return r;
+  } catch {
+    patternRegexCache.set(source, null);
+    return null;
+  }
+}
+
+function validateAllowedEnum(value: unknown, field: FieldSchema, path: string): ValidationError[] {
+  const allowed = field.enum;
+  if (!allowed || allowed.length === 0) return [];
+  const ok = allowed.some((v) => Object.is(v, value));
+  if (ok) return [];
+  return [
+    issue(
+      path,
+      `one of: ${allowed.map((v) => JSON.stringify(v)).join(', ')}`,
+      value,
+      `[llm-schema-validator] Field "${path}" must be one of the allowed values`,
+    ),
+  ];
+}
+
+function validateNumberConstraints(value: number, field: FieldSchema, path: string): ValidationError[] {
+  const errors: ValidationError[] = [];
+  if (field.integer === true && !Number.isInteger(value)) {
+    errors.push(
+      issue(path, 'integer', value, `[llm-schema-validator] Field "${path}" must be an integer`),
+    );
+  }
+  if (
+    typeof field.minimum === 'number' &&
+    Number.isFinite(field.minimum) &&
+    value < field.minimum
+  ) {
+    errors.push(
+      issue(
+        path,
+        `number >= ${field.minimum}`,
+        value,
+        `[llm-schema-validator] Field "${path}" is below minimum ${field.minimum}`,
+      ),
+    );
+  }
+  if (
+    typeof field.maximum === 'number' &&
+    Number.isFinite(field.maximum) &&
+    value > field.maximum
+  ) {
+    errors.push(
+      issue(
+        path,
+        `number <= ${field.maximum}`,
+        value,
+        `[llm-schema-validator] Field "${path}" is above maximum ${field.maximum}`,
+      ),
+    );
+  }
+  return errors;
+}
+
+function validateStringConstraints(value: string, field: FieldSchema, path: string): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const len = value.length;
+  if (typeof field.minLength === 'number' && Number.isInteger(field.minLength) && field.minLength >= 0) {
+    if (len < field.minLength) {
+      errors.push(
+        issue(
+          path,
+          `string length >= ${field.minLength}`,
+          value,
+          `[llm-schema-validator] Field "${path}" is shorter than minLength ${field.minLength}`,
+        ),
+      );
+    }
+  }
+  if (typeof field.maxLength === 'number' && Number.isInteger(field.maxLength) && field.maxLength >= 0) {
+    if (len > field.maxLength) {
+      errors.push(
+        issue(
+          path,
+          `string length <= ${field.maxLength}`,
+          value,
+          `[llm-schema-validator] Field "${path}" is longer than maxLength ${field.maxLength}`,
+        ),
+      );
+    }
+  }
+  if (field.pattern !== undefined && field.pattern !== '') {
+    const re = compilePattern(field.pattern);
+    if (re === null) {
+      errors.push(
+        issue(
+          path,
+          'valid regular expression in schema',
+          field.pattern,
+          `[llm-schema-validator] Field "${path}" schema has an invalid pattern`,
+        ),
+      );
+    } else if (!re.test(value)) {
+      errors.push(
+        issue(
+          path,
+          `string matching /${field.pattern}/`,
+          value,
+          `[llm-schema-validator] Field "${path}" does not match the required pattern`,
+        ),
+      );
+    }
+  }
+  return errors;
+}
+
+function validateArrayBounds(arr: unknown[], field: FieldSchema, path: string): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const n = arr.length;
+  if (typeof field.minItems === 'number' && Number.isInteger(field.minItems) && field.minItems >= 0) {
+    if (n < field.minItems) {
+      errors.push(
+        issue(
+          path,
+          `array length >= ${field.minItems}`,
+          arr,
+          `[llm-schema-validator] Field "${path}" must have at least ${field.minItems} item(s)`,
+        ),
+      );
+    }
+  }
+  if (typeof field.maxItems === 'number' && Number.isInteger(field.maxItems) && field.maxItems >= 0) {
+    if (n > field.maxItems) {
+      errors.push(
+        issue(
+          path,
+          `array length <= ${field.maxItems}`,
+          arr,
+          `[llm-schema-validator] Field "${path}" must have at most ${field.maxItems} item(s)`,
+        ),
+      );
+    }
+  }
+  return errors;
+}
+
 function typeExpectedLabel(field: FieldSchema): string {
   if (field.type === 'string' && field.format) {
     return `string (format: ${field.format})`;
+  }
+  if (field.enum && field.enum.length > 0) {
+    return `${field.type} (enum)`;
   }
   return field.type;
 }
@@ -149,18 +345,25 @@ function validateTypeAndNested(
       if (field.format) {
         errors.push(...validateStringFormat(value, field.format, path));
       }
+      errors.push(...validateAllowedEnum(value, field, path));
+      errors.push(...validateStringConstraints(value, field, path));
       return errors;
     }
     case 'number': {
       if (typeof value !== 'number' || Number.isNaN(value)) {
         errors.push(issue(path, 'number', value, `[llm-schema-validator] Field "${path}" must be a number`));
+        return errors;
       }
+      errors.push(...validateNumberConstraints(value, field, path));
+      errors.push(...validateAllowedEnum(value, field, path));
       return errors;
     }
     case 'boolean': {
       if (typeof value !== 'boolean') {
         errors.push(issue(path, 'boolean', value, `[llm-schema-validator] Field "${path}" must be a boolean`));
+        return errors;
       }
+      errors.push(...validateAllowedEnum(value, field, path));
       return errors;
     }
     case 'array': {
@@ -168,6 +371,7 @@ function validateTypeAndNested(
         errors.push(issue(path, 'array', value, `[llm-schema-validator] Field "${path}" must be an array`));
         return errors;
       }
+      errors.push(...validateArrayBounds(value, field, path));
       errors.push(...validateArrayItems(value, field, path));
       return errors;
     }
@@ -202,19 +406,56 @@ function validateRecord(
     const value = hasKey ? data[key] : undefined;
 
     if (field.required) {
-      if (value === undefined || value === null) {
+      if (!hasKey) {
         errors.push(
           issue(
             path,
-            'required (non-null, non-undefined)',
+            'required (key must be present)',
+            undefined,
+            `[llm-schema-validator] Field "${path}" is required`,
+          ),
+        );
+        continue;
+      }
+      if (value === null) {
+        if (field.nullable) continue;
+        errors.push(
+          issue(
+            path,
+            'non-null value',
+            value,
+            `[llm-schema-validator] Field "${path}" cannot be null`,
+          ),
+        );
+        continue;
+      }
+      if (value === undefined) {
+        errors.push(
+          issue(
+            path,
+            'required',
             value,
             `[llm-schema-validator] Field "${path}" is required`,
           ),
         );
         continue;
       }
-    } else if (value === undefined || value === null) {
-      continue;
+    } else {
+      if (!hasKey || value === undefined) {
+        continue;
+      }
+      if (value === null) {
+        if (field.nullable) continue;
+        errors.push(
+          issue(
+            path,
+            'non-null value',
+            value,
+            `[llm-schema-validator] Field "${path}" cannot be null`,
+          ),
+        );
+        continue;
+      }
     }
 
     errors.push(...validateTypeAndNested(value, field, path));

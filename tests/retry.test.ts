@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { QueryRetriesExhaustedError } from '../src/errors.js';
+import { ProviderError, QueryRetriesExhaustedError } from '../src/errors.js';
 import { executeWithRetry } from '../src/retry.js';
 import type { QueryOptions } from '../src/types.js';
 
@@ -123,5 +123,27 @@ describe('executeWithRetry', () => {
     const result = await executeWithRetry(opts({ provider, maxRetries: 3 }));
     expect(result.success).toBe(true);
     expect((result.data as { answer: number }).answer).toBe(3);
+  });
+
+  it('rejects when provider never settles and providerTimeoutMs elapses', async () => {
+    const provider = {
+      complete: () => new Promise<string>(() => {}),
+    };
+    await expect(
+      executeWithRetry(opts({ provider, providerTimeoutMs: 30, maxRetries: 1 })),
+    ).rejects.toThrow(ProviderError);
+  });
+
+  it('rejects when outer signal aborts during a slow complete', async () => {
+    const controller = new AbortController();
+    const provider = {
+      complete: () =>
+        new Promise<string>((resolve) => {
+          setTimeout(() => resolve('{"answer": 1}'), 200);
+        }),
+    };
+    const p = executeWithRetry(opts({ provider, signal: controller.signal, maxRetries: 1 }));
+    controller.abort();
+    await expect(p).rejects.toThrow(ProviderError);
   });
 });

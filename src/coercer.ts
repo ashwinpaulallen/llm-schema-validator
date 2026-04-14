@@ -105,9 +105,13 @@ export function coerce(data: Record<string, unknown>, schema: Schema): Record<st
 
   for (const key of Object.keys(schema)) {
     const field = schema[key];
-    let value: unknown = Object.prototype.hasOwnProperty.call(data, key)
-      ? data[key]
-      : undefined;
+    const hasKey = Object.prototype.hasOwnProperty.call(data, key);
+    let value: unknown = hasKey ? data[key] : undefined;
+
+    if (hasKey && value === null && field.nullable) {
+      out[key] = null;
+      continue;
+    }
 
     if (value === null || value === undefined) {
       if (field.default !== undefined) {
