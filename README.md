@@ -9,7 +9,7 @@ TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extrac
 ![TypeScript](https://img.shields.io/badge/TypeScript-First-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/node-%3E%3D20.3-339933?logo=node.js&logoColor=white)
 
-**[Features](#features)** · **[Install](#installation)** · **[Quick start](#quick-start)** · **[API](#core-api)** · **[Providers](#built-in-providers)** · **[Schema](#schema-definition-guide)**
+**[Features](#features)** · **[Install](#installation)** · **[Quick start](#quick-start)** · **[Examples](#examples)** · **[API](#core-api)** · **[Providers](#built-in-providers)** · **[Schema](#schema-definition-guide)**
 
 ---
 
@@ -107,6 +107,17 @@ if (result.success) {
   console.error(result.errors);
 }
 ```
+
+---
+
+## Examples
+
+These projects are in the **[GitHub repository](https://github.com/ashwinpaulallen/llm-schema-validator)** under `examples/` — they are **not** part of the **npm** package (the published tarball only contains `dist/`).
+
+| Example | Description |
+|--------|-------------|
+| **[Node.js + OpenAI Chat](examples/nodejs-openai/README.md)** | Minimal Node script (`npm start`): **`llm-schema-validator@1.1.0`** + **`openai`** SDK at `OPENAI_BASE_URL`. |
+| **[NestJS + OpenAI Chat](examples/nestjs-openai/README.md)** | NestJS app: same stack, `GET /demo` runs **`query()`** against your configured endpoint. |
 
 ---
 

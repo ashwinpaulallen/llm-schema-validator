@@ -13,3 +13,6 @@ CHANGELOG.md
 CODE_REVIEW.md
 REFACTORING_SUMMARY.md
 REVIEW_COMPLETE.md
+
+# Sample apps live in the GitHub repo only — not published to npm (`package.json` "files" is `dist` only).
+examples/

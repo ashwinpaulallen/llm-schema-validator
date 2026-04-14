@@ -1,0 +1,24 @@
+{
+  "name": "nodejs-openai-example",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Minimal Node.js script: llm-schema-validator + OpenAI SDK (Chat Completions at OPENAI_BASE_URL)",
+  "type": "module",
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "llm-schema-validator": "1.1.0",
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
