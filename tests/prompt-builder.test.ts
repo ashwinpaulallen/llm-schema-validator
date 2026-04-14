@@ -9,7 +9,7 @@ describe('prompt-builder', () => {
   };
 
   it('buildInitialPrompt includes user text and JSON-only instructions', () => {
-    const p = buildInitialPrompt('Summarize the text.', schema);
+    const p = buildInitialPrompt('Summarize the text.', { kind: 'object', schema });
     expect(p).toContain('Summarize the text.');
     expect(p).toMatch(/ONLY one JSON object/i);
     expect(p).toContain('title');
@@ -26,7 +26,7 @@ describe('prompt-builder', () => {
         message: 'Field "title" must be a string',
       },
     ];
-    const p = buildRetryPrompt('Task here.', schema, prev, errors);
+    const p = buildRetryPrompt('Task here.', { kind: 'object', schema }, prev, errors);
     expect(p).toContain('Task here.');
     expect(p).toContain(prev);
     expect(p).toContain('title');
@@ -34,7 +34,34 @@ describe('prompt-builder', () => {
   });
 
   it('buildRetryPrompt handles empty errors array with fallback hint', () => {
-    const p = buildRetryPrompt('T', schema, '{}', []);
+    const p = buildRetryPrompt('T', { kind: 'object', schema }, '{}', []);
     expect(p).toMatch(/no structured errors/i);
+  });
+
+  it('includes examples in the schema shape for the model', () => {
+    const schemaWithExamples = {
+      status: {
+        type: 'string' as const,
+        required: true,
+        examples: ['active', 'pending', 'closed'],
+      },
+    };
+    const p = buildInitialPrompt('Return status.', { kind: 'object', schema: schemaWithExamples });
+    expect(p).toMatch(/e\.g\.\s/);
+    expect(p).toContain('active');
+    expect(p).toContain('pending');
+    expect(p).toContain('closed');
+  });
+
+  it('buildInitialPrompt for array root asks for a JSON array', () => {
+    const arraySchema = {
+      type: 'array' as const,
+      required: true,
+      itemType: 'string' as const,
+    };
+    const p = buildInitialPrompt('List tags.', { kind: 'array', arraySchema });
+    expect(p).toMatch(/ONLY one JSON array/i);
+    expect(p).toContain('[root array]');
+    expect(p).toContain('items:');
   });
 });

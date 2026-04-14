@@ -8,6 +8,11 @@ export interface FieldSchema {
   default?: unknown;
   description?: string;
   /**
+   * Example values included in the schema outline sent to the model (illustrative vocabulary).
+   * Not enforced by validation — use {@link FieldSchema.enum} for strict allowed values.
+   */
+  examples?: readonly string[];
+  /**
    * When `true`, an explicit JSON `null` is valid (no further type checks on that value).
    * When `false` or omitted, `null` is invalid for typed fields.
    */
@@ -54,6 +59,11 @@ export type Schema = Record<string, FieldSchema>;
 export interface CompleteOptions {
   /** When aborted, the in-flight request should be cancelled where the SDK supports it. */
   signal?: AbortSignal;
+  /**
+   * System / developer instructions, separate from the user message (`prompt` passed to `complete`).
+   * Built-in OpenAI and Anthropic adapters map this to the system role / `system` parameter.
+   */
+  systemPrompt?: string;
 }
 
 /** Adapter interface that any LLM provider must implement. */
@@ -66,13 +76,29 @@ export interface QueryLogger {
   debug(message: string, ...optionalParams: unknown[]): void;
 }
 
-/** Options for a schema-guided LLM query. `S` is inferred from `schema` when you pass a {@link defineSchema} literal. */
-export interface QueryOptions<S extends Schema = Schema> {
+/** Shared options for {@link query} (both object-root and array-root). */
+export interface QueryOptionsBase {
   prompt: string;
-  schema: S;
   provider: LLMProvider;
+  /**
+   * Optional system-level instructions (persona, rules). Sent separately from the built user message
+   * (task + JSON/schema instructions) to providers that support it.
+   */
+  systemPrompt?: string;
   /** @default 3 */
   maxRetries?: number;
+  /**
+   * Base delay in milliseconds before each **retry** after a failed attempt (parse/validation failure).
+   * Omitted or non-positive: no delay (immediate retries). When set, delays scale by {@link QueryOptionsBase.retryBackoffMultiplier}
+   * (default exponential doubling) to reduce rate-limit pressure.
+   */
+  retryDelayMs?: number;
+  /**
+   * Multiplier applied per retry after the first when {@link QueryOptionsBase.retryDelayMs} is set.
+   * Delay before attempt `n` (for `n` ≥ 2) is `retryDelayMs * multiplier^(n-2)`.
+   * @default 2 (exponential backoff). Use `1` for a fixed delay between every retry.
+   */
+  retryBackoffMultiplier?: number;
   /** @default true */
   coerce?: boolean;
   /** @default false */
@@ -81,6 +107,11 @@ export interface QueryOptions<S extends Schema = Schema> {
   debug?: boolean;
   /** When set, diagnostic messages go here instead of `console` (you may omit `debug` if you always provide a logger). */
   logger?: QueryLogger;
+  /**
+   * Called after each **`provider.complete()`** finishes: **`attempt`** is 1-based; **`errors`** is empty on success,
+   * otherwise human-readable messages for that attempt only (no `Attempt N:` prefix — use **`attempt`** for indexing).
+   */
+  onAttempt?: (attempt: number, errors: string[]) => void;
   /**
    * Abort the current attempt (and any in-flight provider request that respects `signal`).
    * Applies to each `provider.complete()` call; a new attempt uses the same outer signal state.
@@ -93,6 +124,29 @@ export interface QueryOptions<S extends Schema = Schema> {
    */
   providerTimeoutMs?: number;
 }
+
+/**
+ * Root JSON is a **plain object** whose keys match `schema` (default).
+ * `S` is inferred from `schema` when you pass a {@link defineSchema} literal.
+ */
+export type QueryObjectOptions<S extends Schema = Schema> = QueryOptionsBase & {
+  /** @default 'object' when omitted */
+  rootType?: 'object';
+  schema: S;
+};
+
+/**
+ * Root JSON is a **JSON array** (e.g. a list of items). Use `arraySchema` with `type: 'array'`.
+ */
+export type QueryArrayOptions<F extends FieldSchema & { type: 'array' }> = QueryOptionsBase & {
+  rootType: 'array';
+  arraySchema: F;
+};
+
+/** Options for a schema-guided LLM query: either an object root or an array root. */
+export type QueryOptions<S extends Schema = Schema> =
+  | QueryObjectOptions<S>
+  | QueryArrayOptions<FieldSchema & { type: 'array' }>;
 
 /** Result of validating and parsing an LLM response against a schema. */
 export interface QueryResult<T> {

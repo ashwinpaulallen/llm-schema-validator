@@ -11,6 +11,9 @@ export const MAX_ERROR_SNIPPET = 500;
 /** Maximum length of field description in schema prompts. */
 export const MAX_DESCRIPTION_LENGTH = 120;
 
+/** Maximum length of serialized `examples` text in schema prompts. */
+export const MAX_EXAMPLES_PROMPT_LENGTH = 120;
+
 /** Maximum length of previous response to include in retry prompts. */
 export const MAX_PREVIOUS_RESPONSE_LENGTH = 1800;
 

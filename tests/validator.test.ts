@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validate } from '../src/validator.js';
+import { validate, validateRootArray } from '../src/validator.js';
 
 describe('validate', () => {
   it('throws TypeError for non-object data', () => {
@@ -192,5 +192,16 @@ describe('validate', () => {
     const errs = validate({ x: 'a' }, schema);
     expect(errs.length).toBeGreaterThan(0);
     expect(errs.some((e) => e.message.includes('invalid pattern'))).toBe(true);
+  });
+
+  it('validateRootArray validates elements like nested array fields', () => {
+    const field = {
+      type: 'array' as const,
+      required: true,
+      itemType: 'string' as const,
+      minItems: 1,
+    };
+    expect(validateRootArray([], field).length).toBeGreaterThan(0);
+    expect(validateRootArray(['a'], field)).toEqual([]);
   });
 });

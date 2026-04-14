@@ -41,12 +41,14 @@ function textFromContent(content: unknown): string {
     .join('');
 }
 
-const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+/** Anthropic API alias for Claude Sonnet 4.6 (current balanced default; see Anthropic model docs). */
+const DEFAULT_MODEL = 'claude-sonnet-4-6';
 /** Default `max_tokens` sent to the Messages API (Claude 3+ models support higher limits; raise for long outputs). */
 const DEFAULT_MAX_TOKENS = 8192;
 
+/** Factory options: model, `max_tokens`, and sampling / generation fields passed through to `messages.create`. */
 export interface CreateAnthropicProviderOptions {
-  /** @default 'claude-sonnet-4-20250514' */
+  /** @default 'claude-sonnet-4-6' */
   model?: string;
   /**
    * `max_tokens` for `messages.create`. Anthropic sets per-model ceilings (e.g. Opus allows large values);
@@ -54,30 +56,30 @@ export interface CreateAnthropicProviderOptions {
    * @default 8192
    */
   maxTokens?: number;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  /** When supported by the API / model. */
+  seed?: number;
+  stop_sequences?: string[];
 }
 
-function resolveAnthropicConfig(
-  modelOrOptions?: string | CreateAnthropicProviderOptions,
-): { model: string; maxTokens: number } {
-  if (modelOrOptions === undefined) {
-    return { model: DEFAULT_MODEL, maxTokens: DEFAULT_MAX_TOKENS };
+function applyAnthropicSampling(body: Record<string, unknown>, opts: CreateAnthropicProviderOptions): void {
+  for (const k of ['temperature', 'top_p', 'top_k', 'seed', 'stop_sequences'] as const) {
+    const v = opts[k];
+    if (v !== undefined && v !== null) {
+      body[k] = v;
+    }
   }
-  if (typeof modelOrOptions === 'string') {
-    return { model: modelOrOptions, maxTokens: DEFAULT_MAX_TOKENS };
-  }
-  return {
-    model: modelOrOptions.model ?? DEFAULT_MODEL,
-    maxTokens: modelOrOptions.maxTokens ?? DEFAULT_MAX_TOKENS,
-  };
 }
 
 /**
  * Anthropic Messages API adapter.
  *
  * @example
- * createAnthropicProvider(apiKey, 'claude-sonnet-4-20250514')
+ * createAnthropicProvider(apiKey, 'claude-sonnet-4-6')
  * @example
- * createAnthropicProvider(apiKey, { model: 'claude-opus-4-20250514', maxTokens: 32768 })
+ * createAnthropicProvider(apiKey, { model: 'claude-opus-4-6', maxTokens: 32768, temperature: 0.3 })
  */
 export function createAnthropicProvider(
   apiKey: string,
@@ -86,7 +88,16 @@ export function createAnthropicProvider(
   if (!apiKey || typeof apiKey !== 'string') {
     throw new TypeError('[llm-schema-validator] createAnthropicProvider: apiKey must be a non-empty string');
   }
-  const { model, maxTokens } = resolveAnthropicConfig(modelOrOptions);
+
+  const isOpts = typeof modelOrOptions === 'object' && modelOrOptions !== null;
+  const model =
+    typeof modelOrOptions === 'string' ? modelOrOptions : (isOpts ? modelOrOptions.model : undefined) ?? DEFAULT_MODEL;
+  const maxTokens =
+    typeof modelOrOptions === 'string'
+      ? DEFAULT_MAX_TOKENS
+      : (isOpts ? modelOrOptions.maxTokens : undefined) ?? DEFAULT_MAX_TOKENS;
+  const samplingFrom = isOpts ? modelOrOptions : undefined;
+
   let client: InstanceType<AnthropicModule['default']> | null = null;
 
   return {
@@ -96,11 +107,17 @@ export function createAnthropicProvider(
         client = new Anthropic.default({ apiKey });
       }
       try {
-        const body = {
+        const body: Record<string, unknown> = {
           model,
           max_tokens: maxTokens,
           messages: [{ role: 'user', content: prompt }],
         };
+        if (init?.systemPrompt != null && init.systemPrompt.length > 0) {
+          body.system = init.systemPrompt;
+        }
+        if (samplingFrom) {
+          applyAnthropicSampling(body, samplingFrom);
+        }
         const res =
           init?.signal !== undefined
             ? await client.messages.create(body, { signal: init.signal })

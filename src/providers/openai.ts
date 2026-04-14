@@ -1,6 +1,18 @@
 import { ProviderError } from '../errors.js';
 import type { CompleteOptions, LLMProvider } from '../types.js';
 
+/** Options forwarded to `chat.completions.create` (same names as the OpenAI API). */
+export interface OpenAIProviderOptions {
+  temperature?: number | null;
+  top_p?: number | null;
+  seed?: number | null;
+  /**
+   * Chat Completions `response_format`. The provider defaults to **`{ type: 'json_object' }`** (native JSON mode)
+   * unless you set this — use **`{ type: 'text' }`** to disable JSON mode for models that do not support it.
+   */
+  response_format?: { type: 'json_object' } | { type: 'text' } | null;
+}
+
 /** Dynamic `import('openai')` result; typed loosely to avoid TS resolution-mode clashes. */
 type OpenAIModule = Record<string, unknown> & {
   default: new (opts: { apiKey: string }) => {
@@ -28,13 +40,47 @@ async function loadOpenAIModule(): Promise<OpenAIModule> {
   }
 }
 
+function applyOpenAIRequestOptions(body: Record<string, unknown>, opts?: OpenAIProviderOptions): void {
+  if (!opts) return;
+  const keys = ['temperature', 'top_p', 'seed', 'response_format'] as const;
+  for (const k of keys) {
+    const v = opts[k];
+    if (v !== undefined && v !== null) {
+      body[k] = v;
+    }
+  }
+}
+
+function resolveOpenAIArgs(
+  modelOrOptions?: string | OpenAIProviderOptions,
+  maybeOptions?: OpenAIProviderOptions,
+): { model: string; requestOptions?: OpenAIProviderOptions } {
+  if (modelOrOptions === undefined) {
+    return { model: 'gpt-4o', requestOptions: maybeOptions };
+  }
+  if (typeof modelOrOptions === 'string') {
+    return { model: modelOrOptions, requestOptions: maybeOptions };
+  }
+  return { model: 'gpt-4o', requestOptions: modelOrOptions };
+}
+
 /**
  * OpenAI Chat Completions adapter.
+ *
+ * @example
+ * createOpenAIProvider(apiKey, 'gpt-4o', { temperature: 0.2 }) // JSON mode is on by default
+ * @example
+ * createOpenAIProvider(apiKey, { temperature: 0, seed: 42, response_format: { type: 'text' } }) // opt out of JSON mode
  */
-export function createOpenAIProvider(apiKey: string, model = 'gpt-4o'): LLMProvider {
+export function createOpenAIProvider(
+  apiKey: string,
+  modelOrOptions?: string | OpenAIProviderOptions,
+  maybeOptions?: OpenAIProviderOptions,
+): LLMProvider {
   if (!apiKey || typeof apiKey !== 'string') {
     throw new TypeError('[llm-schema-validator] createOpenAIProvider: apiKey must be a non-empty string');
   }
+  const { model, requestOptions } = resolveOpenAIArgs(modelOrOptions, maybeOptions);
   let client: InstanceType<OpenAIModule['default']> | null = null;
 
   return {
@@ -44,10 +90,19 @@ export function createOpenAIProvider(apiKey: string, model = 'gpt-4o'): LLMProvi
         client = new openai.default({ apiKey });
       }
       try {
-        const body = {
+        const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+        if (init?.systemPrompt != null && init.systemPrompt.length > 0) {
+          messages.push({ role: 'system', content: init.systemPrompt });
+        }
+        messages.push({ role: 'user', content: prompt });
+        const body: Record<string, unknown> = {
           model,
-          messages: [{ role: 'user', content: prompt }],
+          messages,
         };
+        applyOpenAIRequestOptions(body, requestOptions);
+        if (body.response_format === undefined) {
+          body.response_format = { type: 'json_object' };
+        }
         const res = (await (init?.signal !== undefined
           ? client.chat.completions.create(body, { signal: init.signal })
           : client.chat.completions.create(body))) as {

@@ -9,3 +9,7 @@ tsconfig.json
 .cursor/
 .git/
 .github/
+CHANGELOG.md
+CODE_REVIEW.md
+REFACTORING_SUMMARY.md
+REVIEW_COMPLETE.md

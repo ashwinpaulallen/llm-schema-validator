@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { defineSchema, query } from '../src/index.js';
+import { coerce, defineSchema, query, validate } from '../src/index.js';
+
+describe('standalone exports', () => {
+  it('exports validate and coerce from the package root', () => {
+    const schema = defineSchema({
+      n: { type: 'number', required: true },
+    });
+    const coerced = coerce({ n: '42' }, schema);
+    expect(coerced.n).toBe(42);
+    expect(validate(coerced, schema)).toEqual([]);
+    expect(validate({ n: 'x' }, schema).length).toBeGreaterThan(0);
+  });
+});
 
 describe('defineSchema', () => {
   it('returns the same object reference', () => {
@@ -25,5 +37,28 @@ describe('query', () => {
     });
     expect(result.success).toBe(true);
     expect(result.data.x).toBe(99);
+  });
+
+  it('supports root JSON array when rootType is array', async () => {
+    const arraySchema = {
+      type: 'array' as const,
+      required: true,
+      itemType: 'object' as const,
+      itemProperties: {
+        id: { type: 'string' as const, required: true },
+      },
+    };
+    const provider = {
+      complete: vi.fn().mockResolvedValue('[{"id":"a"},{"id":"b"}]'),
+    };
+    const result = await query({
+      prompt: 'Return items.',
+      rootType: 'array',
+      arraySchema,
+      provider,
+      maxRetries: 1,
+    });
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual([{ id: 'a' }, { id: 'b' }]);
   });
 });

@@ -1,6 +1,7 @@
 import {
   MAX_DEFAULT_VALUE_LENGTH,
   MAX_DESCRIPTION_LENGTH,
+  MAX_EXAMPLES_PROMPT_LENGTH,
   MAX_PREVIOUS_RESPONSE_LENGTH,
 } from './constants.js';
 import { truncate } from './utils.js';
@@ -31,6 +32,10 @@ function describeField(name: string, field: FieldSchema, depth: number): string[
   if (field.nullable) tail.push('nullable');
   if (field.enum && field.enum.length > 0) {
     tail.push(`enum=${field.enum.map((v) => JSON.stringify(v)).join('|')}`);
+  }
+  if (field.examples && field.examples.length > 0) {
+    const ex = field.examples.map((v) => JSON.stringify(v)).join(', ');
+    tail.push(`e.g. ${trunc(ex, MAX_EXAMPLES_PROMPT_LENGTH)}`);
   }
   if (field.type === 'number') {
     if (field.integer) tail.push('integer');
@@ -87,17 +92,33 @@ function describeSchemaShape(schema: Schema): string {
   return lines.join('\n');
 }
 
+function describeArrayRootOutline(field: FieldSchema & { type: 'array' }): string {
+  return describeField('[root array]', field, 0).join('\n');
+}
+
+/** What the model must emit at the top level: a JSON object or a JSON array. */
+export type RootPromptShape =
+  | { kind: 'object'; schema: Schema }
+  | { kind: 'array'; arraySchema: FieldSchema & { type: 'array' } };
+
+function describeRootShape(shape: RootPromptShape): string {
+  return shape.kind === 'object'
+    ? describeSchemaShape(shape.schema)
+    : describeArrayRootOutline(shape.arraySchema);
+}
+
 /**
  * First-turn prompt: task + strict JSON-only rule + compact schema outline (types, req/opt, descriptions).
  */
-export function buildInitialPrompt(userPrompt: string, schema: Schema): string {
-  const shape = describeSchemaShape(schema);
+export function buildInitialPrompt(userPrompt: string, shape: RootPromptShape): string {
+  const outline = describeRootShape(shape);
+  const jsonKind = shape.kind === 'object' ? 'object' : 'array';
   return `${userPrompt.trim()}
 
-Output: ONLY one JSON object (valid JSON). No markdown, no \`\`\`, no explanation before or after.
+Output: ONLY one JSON ${jsonKind} (valid JSON). No markdown, no \`\`\`, no explanation before or after.
 
 Match this shape:
-${shape}`;
+${outline}`;
 }
 
 /**
@@ -105,12 +126,16 @@ ${shape}`;
  */
 export function buildRetryPrompt(
   userPrompt: string,
-  schema: Schema,
+  shape: RootPromptShape,
   previousResponse: string,
   errors: ValidationError[],
 ): string {
-  const shape = describeSchemaShape(schema);
+  const outline = describeRootShape(shape);
   const prev = trunc(previousResponse, MAX_PREVIOUS_RESPONSE_LENGTH);
+  const emptyHint =
+    shape.kind === 'object'
+      ? '(no structured errors — ensure the reply is a single JSON object.)'
+      : '(no structured errors — ensure the reply is a single JSON array.)';
   const fixes = errors.length
     ? errors
         .map(
@@ -118,8 +143,9 @@ export function buildRetryPrompt(
             `${i + 1}. ${e.field}: ${e.message} (want ${e.expected}; got ${e.received})`,
         )
         .join('\n')
-    : '(no structured errors — ensure the reply is a single JSON object.)';
+    : emptyHint;
 
+  const jsonKind = shape.kind === 'object' ? 'object' : 'array';
   return `${userPrompt.trim()}
 
 Previous reply (invalid):
@@ -128,8 +154,8 @@ ${prev}
 Correct:
 ${fixes}
 
-Output: ONLY one JSON object. No markdown or extra text.
+Output: ONLY one JSON ${jsonKind}. No markdown or extra text.
 
 Match:
-${shape}`;
+${outline}`;
 }

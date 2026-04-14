@@ -3,11 +3,15 @@
   "version": "1.0.2",
   "description": "Structured LLM outputs with a TypeScript field schema: parse, coerce, validate, and retry. OpenAI, Anthropic, and custom providers.",
   "sideEffects": false,
-  "main": "./dist/index.js",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js",
       "default": "./dist/index.js"
     }
   },
@@ -15,10 +19,12 @@
     "dist"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20.3.0"
   },
+  "packageManager": "npm@10",
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.esm.json && tsc -p tsconfig.build.cjs.json && node scripts/write-cjs-package-json.mjs",
     "prepublishOnly": "npm run build",
     "dev": "ts-node src/index.ts",
     "test": "vitest run",
