@@ -57,6 +57,13 @@ describe('coerce', () => {
     expect(coerce({ a: null }, sch).a).toBe('fallback');
   });
 
+  it('preserves null when nullable is true', () => {
+    const sch = {
+      a: { type: 'string' as const, required: true, nullable: true },
+    };
+    expect(coerce({ a: null }, sch).a).toBe(null);
+  });
+
   it('recurses into nested objects', () => {
     const data = { n: 0, b: true, s: '', arr: [], nested: { x: '3' } };
     expect(coerce(data, schema).nested).toEqual({ x: 3 });

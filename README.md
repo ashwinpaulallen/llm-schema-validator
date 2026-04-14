@@ -52,7 +52,20 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 npm install llm-schema-validator
 ```
 
-The package lists **`openai`** and **`@anthropic-ai/sdk`** as dependencies so the built-in adapters work after a normal install. You only need API keys for the provider you use.
+**Peer dependencies (install the SDK for the provider you use):**
+
+```bash
+# OpenAI only
+npm install llm-schema-validator openai
+
+# Anthropic only
+npm install llm-schema-validator @anthropic-ai/sdk
+
+# Both
+npm install llm-schema-validator openai @anthropic-ai/sdk
+```
+
+The built-in adapters load their SDK **when you first call** `complete()` — you are not required to install both. Custom providers (`createCustomProvider`) need no vendor SDK.
 
 ---
 
@@ -77,11 +90,7 @@ const schema = defineSchema({
   score: { type: 'number', required: true },
 });
 
-const result = await query<{
-  title: string;
-  sentiment: string;
-  score: number;
-}>({
+const result = await query({
   prompt: 'Summarize this review in JSON: "The food was great but the wait was long."',
   schema,
   provider,
@@ -100,23 +109,26 @@ if (result.success) {
 
 | Export | Role |
 |--------|------|
-| `query` | Main API: run a schema-guided request. |
-| `defineSchema` | Typed pass-through for schema literals. |
+| `query` | Main API: run a schema-guided request; **`data` is inferred** from `schema` when you use `defineSchema` (see `InferSchema`). |
+| `defineSchema` | Keeps schema literals narrow-typed so inference works. |
 | `createOpenAIProvider`, `createAnthropicProvider`, `createCustomProvider` | Ready-made `LLMProvider` implementations. |
-| `LLMProvider`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryResult`, `QueryLogger`, `ValidationError` | TypeScript types. |
+| `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
+| `LLMProvider`, `CompleteOptions`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
 | `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError` | Error classes (see [Errors](#errors-and-exceptions)). |
 
 ---
 
 ## Core API
 
-### `query<T>(options: QueryOptions): Promise<QueryResult<T>>`
+### `query(options: QueryOptions<S>): Promise<QueryResult<InferSchema<S>>>`
 
-Runs the full pipeline. **`T`** is the expected shape of the root JSON object (defaults to `Record<string, unknown>`).
+Runs the full pipeline. **`QueryResult.data`** is typed as **`InferSchema<S>`** where **`S`** is the type of your **`schema`** option. Use **`defineSchema({ ... })`** so field `type` values stay string literals (`'string'`, `'number'`, …); otherwise TypeScript may widen types and inference weakens.
+
+You can still annotate manually when needed: `InferSchema<typeof mySchema>` or `QueryResult<{ ... }>` via assertion.
 
 ### `defineSchema<S extends Schema>(schema: S): S`
 
-Use this when declaring schemas so keys and nesting stay well-typed in your editor.
+Use this when declaring schemas so literals stay narrow for **`InferSchema`** and editor autocomplete.
 
 ### `QueryOptions`
 
@@ -124,12 +136,14 @@ Use this when declaring schemas so keys and nesting stay well-typed in your edit
 |--------|------|-------------|
 | `prompt` | `string` | Your task; the library appends JSON-only and schema instructions. |
 | `schema` | `Schema` | Root object: map of field names to `FieldSchema`. |
-| `provider` | `LLMProvider` | Must implement `complete(prompt: string): Promise<string>`. |
+| `provider` | `LLMProvider` | Must implement `complete(prompt: string, init?: CompleteOptions): Promise<string>` (second argument carries `signal` when timeouts or cancellation are used). |
 | `maxRetries` | `number?` | **Default `3`.** Maximum **total** attempts (each attempt is one `complete` call). Minimum `1`. |
 | `coerce` | `boolean?` | **Default `true`.** Coerce common mismatches before validation (see [Coercion](#coercion)). |
 | `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail validation but a root object was parsed and coerced, return that object with `success: false` instead of throwing. |
 | `debug` | `boolean?` | **Default `false`.** Log diagnostics to `console` when `logger` is not set. |
 | `logger` | `QueryLogger?` | If set, diagnostic messages go to `logger.debug` instead of `console`. Prefer this in production to control log sinks and redaction. |
+| `signal` | `AbortSignal?` | Passed to each `provider.complete()` (and merged with `providerTimeoutMs`). Aborting ends the current attempt with an error (same as a failed provider call). |
+| `providerTimeoutMs` | `number?` | **Default: none.** Maximum time in milliseconds for **each** `complete()` call. Prevents hung LLM requests from blocking forever; uses `AbortSignal` and races the promise so `query` returns even if a custom provider ignores cancellation. |
 
 ### `QueryResult<T>`
 
@@ -145,9 +159,16 @@ Use this when declaring schemas so keys and nesting stay well-typed in your edit
 | Field | Type | Description |
 |--------|------|-------------|
 | `type` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'` | Expected JSON type after coercion. |
-| `required` | `boolean` | If `true`, value must be present and not `null` / `undefined`. |
+| `required` | `boolean` | If `true`, the key must be present. `null` is invalid unless `nullable` is `true`. |
+| `nullable` | `boolean?` | If `true`, JSON `null` is accepted and skips type checks for that field. |
+| `enum` | `(string \| number)[]?` | Value must equal one of the listed literals (after coercion). Use with `string`, `number`, or `boolean`. |
+| `minimum` / `maximum` | `number?` | Inclusive bounds for `type: 'number'`. |
+| `integer` | `boolean?` | If `true`, number must be an integer. |
+| `minLength` / `maxLength` | `number?` | String length (UTF-16 code units). |
+| `pattern` | `string?` | ECMAScript regex **without** `/` delimiters (e.g. `^\\d{5}$`). |
+| `minItems` / `maxItems` | `number?` | Array length bounds. |
 | `format` | `'email' \| 'url' \| 'date'?` | For `type: 'string'` only (see [Schema guide](#schema-definition-guide)). |
-| `default` | `unknown?` | Applied during coercion when the field is missing or nullish. |
+| `default` | `unknown?` | Applied during coercion when the key is missing or the value is nullish (unless `nullable` preserves `null`). |
 | `description` | `string?` | Included in prompts to steer the model. |
 | `properties` | `Schema?` | For `type: 'object'`, nested fields. |
 | `itemType` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'?` | For `type: 'array'`, element type. |
@@ -192,10 +213,10 @@ await query({
 ```typescript
 import { createAnthropicProvider, query, defineSchema } from 'llm-schema-validator';
 
-const provider = createAnthropicProvider(
-  process.env.ANTHROPIC_API_KEY!,
-  'claude-sonnet-4-20250514',
-);
+const provider = createAnthropicProvider(process.env.ANTHROPIC_API_KEY!, {
+  model: 'claude-sonnet-4-20250514',
+  maxTokens: 4096,
+});
 
 await query({
   prompt: 'Return a JSON object with keys a and b.',
@@ -207,7 +228,8 @@ await query({
 });
 ```
 
-- **`createAnthropicProvider(apiKey, model?)`** — Default model: **`claude-sonnet-4-20250514`**.
+- **`createAnthropicProvider(apiKey, model?)`** — Second argument can be a **model id string** (same as before).
+- **`createAnthropicProvider(apiKey, options?)`** — **`options.model`** (default **`claude-sonnet-4-20250514`**) and **`options.maxTokens`** (default **`8192`**, maps to Anthropic `max_tokens`). Use a higher value for long generations (e.g. large Opus outputs) or lower for short JSON-only replies.
 
 ### Custom (any async function)
 
@@ -241,8 +263,8 @@ Return the **raw model text** (the library extracts JSON). You can pass an objec
 import type { LLMProvider } from 'llm-schema-validator';
 
 const myProvider: LLMProvider = {
-  async complete(prompt) {
-    const out = await callYourSdk(prompt);
+  async complete(prompt, init) {
+    const out = await callYourSdk(prompt, { signal: init?.signal });
     return out;
   },
 };
@@ -272,9 +294,11 @@ const provider = createCustomProvider((prompt) => myClient.complete({ input: pro
 
 | `format` | Rule |
 |----------|------|
-| `email` | Contains both `@` and `.`. |
-| `url` | Starts with `http` (e.g. `https://…`). |
-| `date` | `new Date(value)` is valid (finite timestamp). |
+| `email` | Simple shape: exactly one `@`, non-empty local and domain parts, domain has a dot-separated host with a TLD of at least two characters. Not a full RFC 5322 / DNS validation. |
+| `url` | Parses as an absolute **`http:`** or **`https:`** URL with a non-empty host (WHATWG `URL`). |
+| `date` | **Calendar date only:** `YYYY-MM-DD` (UTC), with a real calendar day (rejects e.g. `2024-02-30`). Not arbitrary strings accepted by `Date.parse`. |
+
+**Other constraints** — See the [`FieldSchema`](#fieldschema) table: `enum`, `minimum` / `maximum`, `integer`, `minLength` / `maxLength`, `pattern`, `minItems` / `maxItems`, `nullable`. Optional fields may be omitted; if the key is present with `null`, set `nullable: true` or validation fails.
 
 **Nested object**
 
@@ -345,6 +369,34 @@ if (!result.success) {
 ```
 
 If no suitable root object was ever parsed, the library **throws** `QueryRetriesExhaustedError` (same as when `fallbackToPartial` is `false`).
+
+### Timeouts and `AbortSignal`
+
+Use **`providerTimeoutMs`** so a single slow or stuck `complete()` does not block your process (limit applies **per attempt**, not to the whole `query` including retries). The built-in OpenAI and Anthropic adapters pass the signal through to their HTTP clients. Custom providers can read **`init.signal`** from `createCustomProvider(async (prompt, init) => …)`; if they ignore it, `query` still rejects when the timeout fires, but the underlying work may continue until you wire cancellation yourself.
+
+```typescript
+await query({
+  prompt: '…',
+  schema,
+  provider,
+  providerTimeoutMs: 60_000,
+});
+```
+
+Combine with your own **`signal`** (e.g. request cancellation in a server handler):
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30_000);
+
+await query({
+  prompt: '…',
+  schema,
+  provider,
+  signal: controller.signal,
+  providerTimeoutMs: 60_000,
+});
+```
 
 ### Debug and `logger`
 

@@ -17,7 +17,7 @@ describe('query', () => {
     const provider = {
       complete: vi.fn().mockResolvedValue('{"x": 99}'),
     };
-    const result = await query<{ x: number }>({
+    const result = await query({
       prompt: 'test',
       schema,
       provider,

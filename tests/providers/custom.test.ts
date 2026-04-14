@@ -7,6 +7,6 @@ describe('createCustomProvider', () => {
     const fn = vi.fn().mockResolvedValue('hello');
     const p = createCustomProvider(fn);
     await expect(p.complete('prompt')).resolves.toBe('hello');
-    expect(fn).toHaveBeenCalledWith('prompt');
+    expect(fn).toHaveBeenCalledWith('prompt', undefined);
   });
 });

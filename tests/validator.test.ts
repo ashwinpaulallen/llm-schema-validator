@@ -53,7 +53,11 @@ describe('validate', () => {
       e: { type: 'string' as const, required: true, format: 'email' as const },
     };
     expect(validate({ e: 'a@b.co' }, schema)).toEqual([]);
+    expect(validate({ e: 'user@sub.example.com' }, schema)).toEqual([]);
     expect(validate({ e: 'bad' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ e: 'a@b' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ e: '@@.' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ e: 'a @b.co' }, schema).length).toBeGreaterThan(0);
   });
 
   it('validates string format url', () => {
@@ -61,7 +65,10 @@ describe('validate', () => {
       u: { type: 'string' as const, required: true, format: 'url' as const },
     };
     expect(validate({ u: 'https://x.com' }, schema)).toEqual([]);
+    expect(validate({ u: 'http://localhost/path' }, schema)).toEqual([]);
     expect(validate({ u: 'ftp://x' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ u: 'http' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ u: 'not a url' }, schema).length).toBeGreaterThan(0);
   });
 
   it('validates string format date', () => {
@@ -69,7 +76,12 @@ describe('validate', () => {
       d: { type: 'string' as const, required: true, format: 'date' as const },
     };
     expect(validate({ d: '2024-01-01' }, schema)).toEqual([]);
+    expect(validate({ d: '2024-02-29' }, schema)).toEqual([]);
     expect(validate({ d: 'not a date' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ d: '2' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ d: '2024-02-30' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ d: '2023-02-29' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ d: '2024-13-01' }, schema).length).toBeGreaterThan(0);
   });
 
   it('validates nested object properties', () => {
@@ -109,5 +121,76 @@ describe('validate', () => {
     expect(validate({ items: [{ id: 1 }] }, schema)).toEqual([]);
     const errs = validate({ items: [{ id: 'nope' }] }, schema);
     expect(errs.some((e) => e.field === 'items[0].id')).toBe(true);
+  });
+
+  it('validates string enum', () => {
+    const schema = {
+      status: {
+        type: 'string' as const,
+        required: true,
+        enum: ['active', 'inactive', 'pending'] as const,
+      },
+    };
+    expect(validate({ status: 'active' }, schema)).toEqual([]);
+    expect(validate({ status: 'nope' }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('validates number min, max, and integer', () => {
+    const schema = {
+      age: { type: 'number' as const, required: true, minimum: 0, maximum: 120, integer: true },
+    };
+    expect(validate({ age: 42 }, schema)).toEqual([]);
+    expect(validate({ age: 121 }, schema).length).toBeGreaterThan(0);
+    expect(validate({ age: -1 }, schema).length).toBeGreaterThan(0);
+    expect(validate({ age: 3.5 }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('validates string length and pattern', () => {
+    const schema = {
+      code: {
+        type: 'string' as const,
+        required: true,
+        minLength: 3,
+        maxLength: 6,
+        pattern: '^[A-Z0-9]+$',
+      },
+    };
+    expect(validate({ code: 'ABC' }, schema)).toEqual([]);
+    expect(validate({ code: 'AB' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ code: 'ABCDEFG' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ code: 'ab' }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('validates array minItems and maxItems', () => {
+    const schema = {
+      tags: { type: 'array' as const, required: true, itemType: 'string' as const, minItems: 1, maxItems: 3 },
+    };
+    expect(validate({ tags: ['a'] }, schema)).toEqual([]);
+    expect(validate({ tags: [] }, schema).length).toBeGreaterThan(0);
+    expect(validate({ tags: ['a', 'b', 'c', 'd'] }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('allows null when nullable is true', () => {
+    const schema = {
+      note: { type: 'string' as const, required: true, nullable: true },
+      opt: { type: 'string' as const, required: false, nullable: true },
+    };
+    expect(validate({ note: null, opt: null }, schema)).toEqual([]);
+  });
+
+  it('rejects null on optional field when nullable is false', () => {
+    const schema = {
+      opt: { type: 'string' as const, required: false },
+    };
+    expect(validate({ opt: null }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('reports invalid regex in schema pattern', () => {
+    const schema = {
+      x: { type: 'string' as const, required: true, pattern: '[' },
+    };
+    const errs = validate({ x: 'a' }, schema);
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.message.includes('invalid pattern'))).toBe(true);
   });
 });
