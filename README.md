@@ -7,7 +7,7 @@ TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extrac
 [![Security](https://img.shields.io/badge/security-reviewed-brightgreen)](#security-and-abuse)
 ![Tests](https://img.shields.io/badge/tests-vitest%20passing-brightgreen)
 ![TypeScript](https://img.shields.io/badge/TypeScript-First-3178C6?logo=typescript&logoColor=white)
-![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)
+![Node](https://img.shields.io/badge/node-%3E%3D20.3-339933?logo=node.js&logoColor=white)
 
 **[Features](#features)** · **[Install](#installation)** · **[Quick start](#quick-start)** · **[API](#core-api)** · **[Providers](#built-in-providers)** · **[Schema](#schema-definition-guide)**
 
@@ -34,15 +34,20 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **`query()`** — End-to-end flow: prompt → model → parse → coerce → validate → retry.
 - **`defineSchema()`** — Typed helper so schema objects stay autocomplete-friendly.
 - **Built-in providers** — `createOpenAIProvider` (Chat Completions), `createAnthropicProvider` (Messages API), `createCustomProvider` (any async `(prompt) => string`).
-- **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`).
-- **Diagnostics** — `debug` or inject a **`logger`** for structured logs (avoid logging secrets in production).
+- **Object or array root** — Default top-level JSON object, or **`rootType: 'array'`** with **`arraySchema`** for a list-shaped response.
+- **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`); optional field **`examples`** for prompt hints (separate from strict **`enum`**).
+- **Retries** — Configurable **`maxRetries`**, optional **exponential backoff** via **`retryDelayMs`** / **`retryBackoffMultiplier`**.
+- **Standalone APIs** — **`validate`**, **`coerce`**, **`validateRootArray`**, **`coerceRootArray`** for JSON you already parsed elsewhere.
+- **`onAttempt`** — Callback with attempt index and per-attempt error strings for metrics or custom logging.
+- **Diagnostics** — **`debug`** or inject a **`logger`** for structured logs (avoid logging secrets in production).
+- **Dual module format** — **ESM** and **CommonJS** builds (`import` / `require`).
 
 ---
 
 ## Requirements
 
-- **Node.js** `>= 20` (see [`engines`](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/package.json) in the repo).
-- A runtime where **`fetch`** is available (Node 18+ global `fetch`, or polyfilled in older environments), as used by the official OpenAI / Anthropic clients.
+- **Node.js** `>= 20.3.0` (see [`engines`](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/package.json)). **20.3+** is required for native **`AbortSignal.any`** / **`AbortSignal.timeout`** used for timeouts and signal merging (no legacy polyfills).
+- **`fetch`** (global in supported Node versions) for the official OpenAI / Anthropic SDKs when you use those providers.
 
 ---
 

@@ -19,7 +19,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20.3.0"
   },
   "packageManager": "npm@10",
   "scripts": {
