@@ -129,12 +129,12 @@ if (result.success) {
 
 ## Examples
 
-These projects are in the **[GitHub repository](https://github.com/ashwinpaulallen/llm-schema-validator)** under `examples/` — they are **not** part of the **npm** package (the published tarball only contains `dist/`).
+These projects are in the **[GitHub repository](https://github.com/ashwinpaulallen/llm-schema-validator)** under `examples/` — they are **not** part of the **npm** package (the published tarball only contains `dist/`). See **[examples/README.md](examples/README.md)** for an overview.
 
 | Example | Description |
 |--------|-------------|
-| **[Node.js + OpenAI Chat](examples/nodejs-openai/README.md)** | Minimal Node script (`npm start`): **`llm-schema-validator@1.1.0`** + **`openai`** SDK at `OPENAI_BASE_URL`. |
-| **[NestJS + OpenAI Chat](examples/nestjs-openai/README.md)** | NestJS app: same stack, `GET /demo` runs **`query()`** against your configured endpoint. |
+| **[Node.js + OpenAI Chat](examples/nodejs-openai/README.md)** | **`llm-schema-validator@1.3.0`** + **`openai`**: offline **`fromZod` / `fromJsonSchema` / `coerce` / `validate`**, online **`query`** (object + array roots, hooks, few-shot, `promptTemplate`, cross-field `validate`). |
+| **[NestJS + OpenAI Chat](examples/nestjs-openai/README.md)** | NestJS: **`GET /offline`** (adapters, no API key) and **`GET /demo`** (full **`query`** with hooks and **`durationMs` / `usage`** on the result). |
 
 ---
 

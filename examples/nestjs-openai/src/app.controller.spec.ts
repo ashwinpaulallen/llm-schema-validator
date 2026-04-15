@@ -10,11 +10,18 @@ describe('AppController', () => {
       status: 'ok',
       message: 'test',
     }),
+    runOfflineAdapterDemos: jest.fn().mockReturnValue({
+      jsonSchemaFieldCount: 1,
+      zodCoerced: { name: 'x', n: 1 },
+      validationSample: [],
+    }),
     runStructuredDemo: jest.fn().mockResolvedValue({
       success: true,
       attempts: 1,
       errors: [],
+      durationMs: 1,
       data: { topic: 't', bullets: ['a', 'b'] },
+      hookTrace: { onCompleteFired: true, attemptEvents: 1 },
     }),
   };
 
@@ -38,5 +45,11 @@ describe('AppController', () => {
     const r = await appController.runDemo();
     expect(mockAppService.runStructuredDemo).toHaveBeenCalled();
     expect(r.success).toBe(true);
+  });
+
+  it('delegates offline to service', () => {
+    const r = appController.offline();
+    expect(mockAppService.runOfflineAdapterDemos).toHaveBeenCalled();
+    expect(r.jsonSchemaFieldCount).toBe(1);
   });
 });
