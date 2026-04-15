@@ -9,7 +9,7 @@ import { coerce, coerceRootArray } from './coercer.js';
 import { buildInitialPrompt, buildRetryPrompt, type RootPromptShape } from './prompt-builder.js';
 import { extractJSON } from './parser.js';
 import type {
-  FieldSchema,
+  ArrayRootFieldSchema,
   QueryArrayOptions,
   QueryObjectOptions,
   QueryOptions,
@@ -17,7 +17,7 @@ import type {
   Schema,
   ValidationError,
 } from './types.js';
-import { isPlainObject } from './utils.js';
+import { isPlainObject, toLabel } from './utils.js';
 import { validate, validateRootArray } from './validator.js';
 
 function parseFailureErrors(message: string, raw: string, root: 'object' | 'array'): ValidationError[] {
@@ -59,7 +59,7 @@ function rootArrayTypeError(parsed: unknown): ValidationError[] {
 
 function isArrayRootQuery(
   options: QueryOptions,
-): options is QueryArrayOptions<FieldSchema & { type: 'array' }> {
+): options is QueryArrayOptions<ArrayRootFieldSchema> {
   return options.rootType === 'array';
 }
 
@@ -93,6 +93,48 @@ function formatValidationAttemptErrors(errors: ValidationError[]): string[] {
     (err) =>
       `field "${err.field}" — ${err.message} (expected ${err.expected}; received ${err.received})`,
   );
+}
+
+/** Cross-field / query-level validate: same contract as {@link FieldSchema.validate} (`null` = ok). */
+function runQueryLevelValidate(run: () => string | null): ValidationError[] {
+  try {
+    const msg = run();
+    if (msg === null || msg === undefined) return [];
+    if (typeof msg !== 'string') {
+      return [
+        {
+          field: '(query)',
+          expected: 'string | null from query validate',
+          received: typeof msg,
+          message: '[llm-schema-validator] query validate must return string | null',
+        },
+      ];
+    }
+    const message =
+      msg.length > 0
+        ? msg.startsWith('[llm-schema-validator]')
+          ? msg
+          : `[llm-schema-validator] ${msg}`
+        : '[llm-schema-validator] Cross-field validation failed';
+    return [
+      {
+        field: '(query)',
+        expected: 'cross-field rules satisfied',
+        received: 'constraint failed',
+        message,
+      },
+    ];
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return [
+      {
+        field: '(query)',
+        expected: 'cross-field validation',
+        received: toLabel(e),
+        message: `[llm-schema-validator] query validate threw: ${detail}`,
+      },
+    ];
+  }
 }
 
 function notifyAttempt(
@@ -206,7 +248,11 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       }
       lastCoerced = data;
 
-      const validationErrors = validateRootArray(data, arraySchema!);
+      let validationErrors = validateRootArray(data, arraySchema!);
+      const arrayOpts = options as QueryArrayOptions<ArrayRootFieldSchema>;
+      if (validationErrors.length === 0 && arrayOpts.validate) {
+        validationErrors = runQueryLevelValidate(() => arrayOpts.validate!(data));
+      }
 
       if (validationErrors.length === 0) {
         log('validation: ok');
@@ -250,13 +296,17 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     const objectSchema = (options as QueryObjectOptions<Schema>).schema;
+    const objectOpts = options as QueryObjectOptions<Schema>;
     let data: Record<string, unknown> = parsed;
     if (coerceEnabled) {
       data = coerce(data, objectSchema);
     }
     lastCoerced = data;
 
-    const validationErrors = validate(data, objectSchema);
+    let validationErrors = validate(data, objectSchema);
+    if (validationErrors.length === 0 && objectOpts.validate) {
+      validationErrors = runQueryLevelValidate(() => objectOpts.validate!(data));
+    }
 
     if (validationErrors.length === 0) {
       log('validation: ok');

@@ -1,4 +1,10 @@
-import type { FieldSchema, Schema } from './types.js';
+import type { ArrayRootFieldSchema, FieldSchema, Schema, SimpleFieldSchema, UnionFieldSchema } from './types.js';
+import {
+  isUnionField,
+  runCustomValidate,
+  syntheticFieldFromUnionBranch,
+  validateTypeAndNested,
+} from './validator.js';
 import { isPlainObject } from './utils.js';
 
 function cloneDefault(value: unknown): unknown {
@@ -73,7 +79,24 @@ function coerceObject(
   return { ...record };
 }
 
-function coerceValue(value: unknown, field: FieldSchema): unknown {
+function coerceAnyOf(value: unknown, field: UnionFieldSchema): unknown {
+  const branches = field.anyOf;
+  if (branches.length === 0) return value;
+  for (const branch of branches) {
+    const synthetic = syntheticFieldFromUnionBranch(field, branch);
+    const coerced = coerceSimpleFieldValue(value, synthetic);
+    const errs = validateTypeAndNested(coerced, synthetic, '');
+    if (errs.length > 0) continue;
+    if (field.validate) {
+      const parentErrs = runCustomValidate(coerced, { validate: field.validate } as FieldSchema, '');
+      if (parentErrs.length > 0) continue;
+    }
+    return coerced;
+  }
+  return coerceSimpleFieldValue(value, syntheticFieldFromUnionBranch(field, branches[0]!));
+}
+
+function coerceSimpleFieldValue(value: unknown, field: SimpleFieldSchema): unknown {
   switch (field.type) {
     case 'number':
       return coerceNumber(value);
@@ -88,6 +111,13 @@ function coerceValue(value: unknown, field: FieldSchema): unknown {
     default:
       return value;
   }
+}
+
+function coerceValue(value: unknown, field: FieldSchema): unknown {
+  if (isUnionField(field)) {
+    return coerceAnyOf(value, field);
+  }
+  return coerceSimpleFieldValue(value, field);
 }
 
 /**
@@ -128,7 +158,7 @@ export function coerce(data: Record<string, unknown>, schema: Schema): Record<st
 
 function coerceArrayElement(
   item: unknown,
-  itemType: NonNullable<FieldSchema['itemType']>,
+  itemType: NonNullable<SimpleFieldSchema['itemType']>,
   itemProperties: Schema | undefined,
 ): unknown {
   switch (itemType) {
@@ -153,7 +183,7 @@ function coerceArrayElement(
 /**
  * Apply schema-driven coercions to a root JSON array (per-element when `itemType` is set).
  */
-export function coerceRootArray(data: unknown[], field: FieldSchema & { type: 'array' }): unknown[] {
+export function coerceRootArray(data: unknown[], field: ArrayRootFieldSchema): unknown[] {
   const arr = [...data];
   const itemType = field.itemType;
   if (!itemType) return arr;

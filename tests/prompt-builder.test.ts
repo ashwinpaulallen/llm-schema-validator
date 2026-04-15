@@ -53,6 +53,39 @@ describe('prompt-builder', () => {
     expect(p).toContain('closed');
   });
 
+  it('includes const in the schema outline', () => {
+    const schema = {
+      kind: { type: 'string' as const, required: true, const: 'invoice' as const },
+    };
+    const p = buildInitialPrompt('Task.', { kind: 'object', schema });
+    expect(p).toMatch(/const="invoice"/);
+  });
+
+  it('describes anyOf branches in the schema outline', () => {
+    const schema = {
+      id: {
+        required: true,
+        anyOf: [{ type: 'string' as const }, { type: 'number' as const }],
+      },
+    };
+    const p = buildInitialPrompt('Task.', { kind: 'object', schema });
+    expect(p).toMatch(/anyOf/);
+    expect(p).toMatch(/∙\[0\]/);
+    expect(p).toMatch(/∙\[1\]/);
+  });
+
+  it('mentions custom validate in schema outline when set', () => {
+    const schemaWithCustom = {
+      n: {
+        type: 'number' as const,
+        required: true,
+        validate: (_v: unknown) => null,
+      },
+    };
+    const p = buildInitialPrompt('Task.', { kind: 'object', schema: schemaWithCustom });
+    expect(p).toMatch(/custom validate/);
+  });
+
   it('buildInitialPrompt for array root asks for a JSON array', () => {
     const arraySchema = {
       type: 'array' as const,

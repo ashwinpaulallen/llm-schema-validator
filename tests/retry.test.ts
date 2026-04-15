@@ -281,4 +281,76 @@ describe('executeWithRetry', () => {
     );
     expect(onAttempt).toHaveBeenCalledWith(1, [expect.stringContaining('network')]);
   });
+
+  it('retries when query-level validate fails then succeeds', async () => {
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"start":"2024-01-02","end":"2024-01-01"}')
+        .mockResolvedValueOnce('{"start":"2024-01-01","end":"2024-01-02"}'),
+    };
+    const schema: Schema = {
+      start: { type: 'string', required: true, format: 'date' },
+      end: { type: 'string', required: true, format: 'date' },
+    };
+    const result = await executeWithRetry(
+      opts({
+        provider,
+        schema,
+        maxRetries: 3,
+        validate: (data) => {
+          const s = data.start as string;
+          const e = data.end as string;
+          if (s >= e) return 'end must be after start';
+          return null;
+        },
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.attempts).toBe(2);
+  });
+
+  it('runs query validate on array root', async () => {
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('[1,2,3]')
+        .mockResolvedValueOnce('[1,2]'),
+    };
+    const result = await executeWithRetry({
+      prompt: 'x',
+      provider,
+      rootType: 'array',
+      arraySchema: { type: 'array', required: true, itemType: 'number' },
+      maxRetries: 3,
+      validate: (arr) => (arr.length <= 2 ? null : 'at most 2 items'),
+    });
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual([1, 2]);
+  });
+
+  it('includes query-level validation in onAttempt errors', async () => {
+    const onAttempt = vi.fn();
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"a":1,"b":1}'),
+    };
+    await expect(
+      executeWithRetry(
+        opts({
+          provider,
+          schema: {
+            a: { type: 'number', required: true },
+            b: { type: 'number', required: true },
+          },
+          maxRetries: 1,
+          coerce: false,
+          onAttempt,
+          validate: (d) => ((d.a as number) < (d.b as number) ? null : 'a must be less than b'),
+        }),
+      ),
+    ).rejects.toThrow(QueryRetriesExhaustedError);
+    const errors = onAttempt.mock.calls[0][1] as string[];
+    expect(errors[0]).toMatch(/\(query\)/);
+    expect(errors[0]).toMatch(/a must be less than b/);
+  });
 });
