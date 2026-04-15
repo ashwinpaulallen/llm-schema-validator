@@ -1,4 +1,5 @@
 import { LOG_PREFIX } from './constants.js';
+import type { CompletionUsage } from './types.js';
 
 const JSON_PREFIX = `${LOG_PREFIX} json:`;
 const PROVIDER_PREFIX = `${LOG_PREFIX} provider:`;
@@ -40,6 +41,8 @@ export class QueryRetriesExhaustedError extends Error {
     readonly attempts: number,
     readonly collectedErrors: readonly string[],
     readonly lastRawSnippet: string,
+    /** Aggregated token usage from all `complete()` calls, when reported. */
+    readonly usage?: CompletionUsage,
   ) {
     super(`${QUERY_PREFIX} Failed after ${attempts} attempt(s).`);
   }

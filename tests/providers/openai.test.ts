@@ -21,6 +21,7 @@ describe('createOpenAIProvider', () => {
     createMock.mockReset();
     createMock.mockResolvedValue({
       choices: [{ message: { content: '{"ok":true}' } }],
+      usage: { prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 },
     });
   });
 
@@ -28,7 +29,10 @@ describe('createOpenAIProvider', () => {
     const { createOpenAIProvider } = await import('../../src/providers/openai.js');
     const provider = createOpenAIProvider('test-key', 'gpt-4o-mini');
     const out = await provider.complete('hi');
-    expect(out).toBe('{"ok":true}');
+    expect(out).toEqual({
+      text: '{"ok":true}',
+      usage: { promptTokens: 9, completionTokens: 3, totalTokens: 12 },
+    });
     expect(createMock).toHaveBeenCalledWith({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: 'hi' }],
@@ -92,5 +96,15 @@ describe('createOpenAIProvider', () => {
     expect(createMock.mock.calls[0][0]).toMatchObject({
       response_format: { type: 'text' },
     });
+  });
+
+  it('returns text only when the API omits usage', async () => {
+    createMock.mockResolvedValueOnce({
+      choices: [{ message: { content: '{}' } }],
+    });
+    const { createOpenAIProvider } = await import('../../src/providers/openai.js');
+    const provider = createOpenAIProvider('k');
+    const out = await provider.complete('x');
+    expect(out).toEqual({ text: '{}' });
   });
 });

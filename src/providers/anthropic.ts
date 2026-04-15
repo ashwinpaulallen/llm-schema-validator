@@ -1,11 +1,14 @@
 import { ProviderError } from '../errors.js';
-import type { CompleteOptions, LLMProvider } from '../types.js';
+import type { CompleteOptions, LLMCompletion, LLMProvider, LLMProviderCompleteResult } from '../types.js';
 
 /** Dynamic `import('@anthropic-ai/sdk')` result; typed loosely to avoid TS resolution-mode clashes. */
 type AnthropicModule = Record<string, unknown> & {
   default: new (opts: { apiKey: string }) => {
     messages: {
-      create: (body: unknown, options?: { signal?: AbortSignal }) => Promise<{ content: unknown }>;
+      create: (
+        body: unknown,
+        options?: { signal?: AbortSignal },
+      ) => Promise<{ content: unknown; usage?: { input_tokens?: number; output_tokens?: number } }>;
     };
   };
   APIError: new (...args: unknown[]) => Error & { status?: number; message: string };
@@ -101,7 +104,7 @@ export function createAnthropicProvider(
   let client: InstanceType<AnthropicModule['default']> | null = null;
 
   return {
-    async complete(prompt: string, init?: CompleteOptions): Promise<string> {
+    async complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult> {
       const Anthropic = await loadAnthropicModule();
       if (!client) {
         client = new Anthropic.default({ apiKey });
@@ -122,7 +125,21 @@ export function createAnthropicProvider(
           init?.signal !== undefined
             ? await client.messages.create(body, { signal: init.signal })
             : await client.messages.create(body);
-        return textFromContent(res.content);
+        const text = textFromContent(res.content);
+        const u = res.usage;
+        const usage =
+          u && (u.input_tokens !== undefined || u.output_tokens !== undefined)
+            ? {
+                promptTokens: u.input_tokens,
+                completionTokens: u.output_tokens,
+                totalTokens:
+                  u.input_tokens !== undefined && u.output_tokens !== undefined
+                    ? u.input_tokens + u.output_tokens
+                    : undefined,
+              }
+            : undefined;
+        const out: LLMCompletion = usage ? { text, usage } : { text };
+        return out;
       } catch (error) {
         if (error instanceof Anthropic.APIError) {
           throw new ProviderError(

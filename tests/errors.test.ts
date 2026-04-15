@@ -31,7 +31,14 @@ describe('custom errors', () => {
     expect(err.attempts).toBe(2);
     expect(err.collectedErrors).toEqual(['a', 'b']);
     expect(err.lastRawSnippet).toBe('snippet');
+    expect(err.usage).toBeUndefined();
     expect(err.message).toMatch(/query:/);
     expect(err.message).toMatch(/Failed after 2 attempt/);
+  });
+
+  it('QueryRetriesExhaustedError may carry aggregated usage', () => {
+    const usage = { promptTokens: 5, completionTokens: 2, totalTokens: 7 };
+    const err = new QueryRetriesExhaustedError(1, ['e'], 's', usage);
+    expect(err.usage).toEqual(usage);
   });
 });

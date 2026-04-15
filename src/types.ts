@@ -103,14 +103,50 @@ export interface CompleteOptions {
   systemPrompt?: string;
 }
 
-/** Adapter interface that any LLM provider must implement. */
-export interface LLMProvider {
-  complete(prompt: string, init?: CompleteOptions): Promise<string>;
+/**
+ * Token usage reported by some providers (OpenAI Chat Completions, Anthropic Messages, etc.).
+ * Omitted when the provider does not return counts.
+ */
+export interface CompletionUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 }
 
-/** Optional structured logging for {@link query} diagnostics (used when set, or when `debug` falls back to `console`). */
+/**
+ * Rich completion result when the provider exposes {@link CompletionUsage}.
+ * Custom providers may still return a plain `string` for backward compatibility.
+ */
+export interface LLMCompletion {
+  text: string;
+  usage?: CompletionUsage;
+}
+
+/** Return type of {@link LLMProvider.complete}. */
+export type LLMProviderCompleteResult = string | LLMCompletion;
+
+/** Adapter interface that any LLM provider must implement. */
+export interface LLMProvider {
+  complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult>;
+}
+
+/**
+ * Library diagnostic verbosity for {@link QueryOptionsBase.logLevel}.
+ * **`error` ≤ `warn` ≤ `info` ≤ `debug`** — setting **`info`** shows error, warn, and info lines, but not debug (e.g. raw model text).
+ */
+export type QueryLogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug';
+
+/** Optional structured logging for {@link query} diagnostics. */
 export interface QueryLogger {
-  debug(message: string, ...optionalParams: unknown[]): void;
+  /**
+   * Preferred sink: receives the severity, full message (including `[llm-schema-validator]` prefix), and any extra args.
+   */
+  log?(level: QueryLogLevel, message: string, ...optionalParams: unknown[]): void;
+  /**
+   * Legacy single-channel sink; used when {@link QueryLogger.log} is omitted.
+   * Receives the same prefixed message as before (no level argument).
+   */
+  debug?(message: string, ...optionalParams: unknown[]): void;
 }
 
 /**
@@ -154,9 +190,20 @@ export interface QueryOptionsBase {
   coerce?: boolean;
   /** @default false */
   fallbackToPartial?: boolean;
-  /** Log each attempt and validation outcome to `console` when `logger` is not set. */
+  /**
+   * Minimum diagnostic verbosity. **`silent`** by default unless **`debug: true`**, a **`logger`** is set, or **`logLevel`** is set explicitly.
+   * Takes precedence over {@link QueryOptionsBase.debug} when both are set.
+   */
+  logLevel?: QueryLogLevel;
+  /**
+   * @deprecated Use **`logLevel: 'debug'`** (or **`'info'`**, etc.) instead.
+   * When **`true`** and **`logLevel`** is omitted, effective level is **`debug`**.
+   */
   debug?: boolean;
-  /** When set, diagnostic messages go here instead of `console` (you may omit `debug` if you always provide a logger). */
+  /**
+   * When set, diagnostics go here (or to **`console`** with **`info`/`warn`/`debug`** when no logger).
+   * If only **`logger.debug`** is provided (no **`logger.log`**), all emitted lines use that single method (level filtering still applies).
+   */
   logger?: QueryLogger;
   /**
    * Called after each **`provider.complete()`** finishes: **`attempt`** is 1-based; **`errors`** is empty on success,
@@ -253,6 +300,11 @@ export interface QueryResult<T> {
   success: boolean;
   attempts: number;
   errors: string[];
+  /**
+   * Aggregated token counts across **all** `complete()` calls for this `query` (including failed attempts),
+   * when the provider reported usage. Omitted if no attempt returned usage data.
+   */
+  usage?: CompletionUsage;
 }
 
 /** A single validation failure against the expected schema. */

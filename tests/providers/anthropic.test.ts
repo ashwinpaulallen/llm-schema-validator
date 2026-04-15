@@ -19,6 +19,7 @@ describe('createAnthropicProvider', () => {
     messagesCreate.mockReset();
     messagesCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"a":1}' }],
+      usage: { input_tokens: 100, output_tokens: 20 },
     });
   });
 
@@ -26,7 +27,14 @@ describe('createAnthropicProvider', () => {
     const { createAnthropicProvider } = await import('../../src/providers/anthropic.js');
     const provider = createAnthropicProvider('key', 'claude-test');
     const out = await provider.complete('prompt');
-    expect(out).toBe('{"a":1}');
+    expect(out).toEqual({
+      text: '{"a":1}',
+      usage: {
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+      },
+    });
     expect(messagesCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'claude-test',
@@ -92,5 +100,15 @@ describe('createAnthropicProvider', () => {
       top_p: 0.9,
       top_k: 5,
     });
+  });
+
+  it('returns text only when usage is absent', async () => {
+    messagesCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{}' }],
+    });
+    const { createAnthropicProvider } = await import('../../src/providers/anthropic.js');
+    const provider = createAnthropicProvider('k');
+    const out = await provider.complete('z');
+    expect(out).toEqual({ text: '{}' });
   });
 });

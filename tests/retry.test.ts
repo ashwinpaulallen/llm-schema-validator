@@ -210,13 +210,15 @@ describe('executeWithRetry', () => {
   });
 
   it('logs when debug is true', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const provider = {
       complete: vi.fn().mockResolvedValue('{"answer": 1}'),
     };
     await executeWithRetry(opts({ provider, debug: true }));
-    expect(log).toHaveBeenCalled();
-    log.mockRestore();
+    expect(info.mock.calls.length + debug.mock.calls.length).toBeGreaterThan(0);
+    info.mockRestore();
+    debug.mockRestore();
   });
 
   it('uses injected logger.debug when provided', async () => {
@@ -226,6 +228,30 @@ describe('executeWithRetry', () => {
     };
     await executeWithRetry(opts({ provider, logger: { debug } }));
     expect(debug).toHaveBeenCalled();
+  });
+
+  it('uses injected logger.log with level when provided', async () => {
+    const log = vi.fn();
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"answer": 1}'),
+    };
+    await executeWithRetry(opts({ provider, logger: { log } }));
+    expect(log).toHaveBeenCalled();
+    expect(log.mock.calls[0]?.[0]).toBe('info');
+  });
+
+  it('with logLevel info omits debug lines (e.g. raw response)', async () => {
+    const debugSink = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const infoSink = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"answer": 1}'),
+    };
+    await executeWithRetry(opts({ provider, logLevel: 'info' }));
+    expect(infoSink).toHaveBeenCalled();
+    const debugBodies = debugSink.mock.calls.map((c) => String(c[0]));
+    expect(debugBodies.some((m) => m.includes('raw response'))).toBe(false);
+    debugSink.mockRestore();
+    infoSink.mockRestore();
   });
 
   it('retries after JSON parse failure', async () => {
