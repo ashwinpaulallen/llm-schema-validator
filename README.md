@@ -40,6 +40,9 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **`const` literals** — Exact value match per field (discriminated unions, fixed `kind` strings).
 - **Per-field `validate`** — Custom `(value) => string | null` after built-in checks (e.g. “multiple of 5”).
 - **Cross-field `validate` on `query`** — `(data) => string | null` on the full coerced object (or root array) after per-field validation (e.g. `endDate > startDate`).
+- **Few-shot `fewShot`** — Optional input → JSON output pairs injected into the user message for consistent structure on hard schemas.
+- **`chainOfThought`** — Optional flag: prompt asks the model to reason in plain text first, then emit the final JSON (more tokens, often better on difficult extractions).
+- **`promptTemplate`** — Optional `(context) => string` to wrap the full user message; **`PromptTemplateContext`** includes `builtPrompt`, `taskPrompt`, `attempt`, `maxAttempts`, `rootKind`, `isRetry`.
 - **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`); optional field **`examples`** for prompt hints (separate from strict **`enum`**).
 - **Retries** — Configurable **`maxRetries`**, optional **exponential backoff** via **`retryDelayMs`** / **`retryBackoffMultiplier`**.
 - **Standalone APIs** — **`validate`**, **`coerce`**, **`validateRootArray`**, **`coerceRootArray`** for JSON you already parsed elsewhere.
@@ -145,7 +148,7 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 | `fromJsonSchema`, `JsonSchemaAdapterError` | Convert a **JSON Schema draft-07** object schema to a **`Schema`** (same-document **`$ref`** to `#/definitions` / `#/$defs` supported). |
 | `createOpenAIProvider`, `OpenAIProviderOptions`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createCustomProvider` | Ready-made `LLMProvider` implementations and their factory option types. |
 | `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
-| `LLMProvider`, `CompleteOptions`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
+| `LLMProvider`, `CompleteOptions`, `Schema`, `FieldSchema`, `FewShotExample`, `PromptTemplateContext`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
 | `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError`, `ZodAdapterError`, `JsonSchemaAdapterError` | Error classes (see [Errors](#errors-and-exceptions)). |
 
 **ESM and CommonJS** — The build emits **ESM** under `dist/` (`import` / `"module"`) and **CommonJS** under `dist/cjs/` (`require` / `"main"`). The package root sets `"type": "module"`; `dist/cjs/package.json` sets `"type": "commonjs"` so Node resolves `require('llm-schema-validator')` to the CJS build. Use `import` from the same package name in ESM projects.
@@ -197,6 +200,9 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 | `signal` | `AbortSignal?` | Passed to each `provider.complete()` (and merged with `providerTimeoutMs`). Aborting ends the current attempt with an error (same as a failed provider call). |
 | `providerTimeoutMs` | `number?` | **Default: none.** Maximum time in milliseconds for **each** `complete()` call. Prevents hung LLM requests from blocking forever; uses `AbortSignal` and races the promise so `query` returns even if a custom provider ignores cancellation. |
 | `validate` | `(data) => string \| null?` | **Cross-field validation** after per-field checks on the **coerced** root: object root → `Record<string, unknown>`; array root → `unknown[]`. Return **`null`** if OK, or an error message string. |
+| `fewShot` | `{ input: string; output: unknown }[]?` | **Few-shot examples** after `prompt` on the first attempt. On **retries**, an **abbreviated** block (fewer examples, tighter size caps) is inserted **after** the invalid reply and validation fixes so error context stays near the top. |
+| `chainOfThought` | `boolean?` | **Default `false`.** When **`true`**, the user message asks for step-by-step reasoning in plain text, then a single JSON root value matching the schema. **`extractJSON`** prefers the **last** top-level JSON value in the reply (nested JSON inside that value is still one value); earlier illustrative objects in the reasoning text are ignored when they are clearly nested or superseded. Uses more tokens. |
+| `promptTemplate` | `(context: PromptTemplateContext) => string?` | Transform the **fully built** user message before **`complete()`**. **`context.builtPrompt`** is the full text; **`taskPrompt`** is your original `prompt`; **`attempt`** / **`maxAttempts`** / **`isRetry`** identify the try. Must return a string. |
 
 ### `QueryResult<T>`
 

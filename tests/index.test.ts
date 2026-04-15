@@ -39,6 +39,28 @@ describe('query', () => {
     expect(result.data.x).toBe(99);
   });
 
+  it('extracts the final JSON when chain-of-thought includes an earlier illustrative object', async () => {
+    const schema = defineSchema({
+      answer: { type: 'number', required: true },
+    });
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValue(
+          'Let me sketch: {"draft": true}\n\nSo the result is:\n{"answer": 42}',
+        ),
+    };
+    const result = await query({
+      prompt: 'Compute.',
+      schema,
+      provider,
+      chainOfThought: true,
+      maxRetries: 1,
+    });
+    expect(result.success).toBe(true);
+    expect(result.data.answer).toBe(42);
+  });
+
   it('supports root JSON array when rootType is array', async () => {
     const arraySchema = {
       type: 'array' as const,

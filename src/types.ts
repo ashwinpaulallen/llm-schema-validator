@@ -113,6 +113,20 @@ export interface QueryLogger {
   debug(message: string, ...optionalParams: unknown[]): void;
 }
 
+/**
+ * One few-shot pair: free-text {@link FewShotExample#input} and the expected root JSON
+ * {@link FewShotExample#output} (object or array, matching the query’s root shape).
+ */
+export interface FewShotExample {
+  /** Example user/task input the model should treat as analogous to the real prompt. */
+  input: string;
+  /**
+   * Expected JSON at the **root** — a plain object for default object-root queries, or a JSON array
+   * when using {@link QueryArrayOptions}.
+   */
+  output: unknown;
+}
+
 /** Shared options for {@link query} (both object-root and array-root). */
 export interface QueryOptionsBase {
   prompt: string;
@@ -160,6 +174,43 @@ export interface QueryOptionsBase {
    * @default undefined (no timeout)
    */
   providerTimeoutMs?: number;
+  /**
+   * Optional full **input → output** examples injected into the user message (after `prompt`, before JSON rules).
+   * Improves adherence on complex schemas; each `output` must match the root shape (object vs array).
+   * On **retries**, a shorter few-shot block is placed **after** “Previous reply” / “Correct:” so validation context stays prominent.
+   */
+  fewShot?: readonly FewShotExample[];
+  /**
+   * When `true`, the prompt asks the model to **reason in plain text first**, then output the final JSON.
+   * Improves accuracy on hard extractions; uses more tokens.
+   * **`extractJSON`** prefers the **last** top-level JSON value when several appear (see parser docs).
+   * @default false
+   */
+  chainOfThought?: boolean;
+  /**
+   * Optional transform applied to the **fully built** user message (task + few-shot + JSON/schema instructions)
+   * immediately before each `provider.complete()` call. Use for house-style wrappers or prefixes/suffixes.
+   * Receives {@link PromptTemplateContext} so you can vary the wrapper by attempt, retry vs first try, etc.
+   */
+  promptTemplate?: (context: PromptTemplateContext) => string;
+}
+
+/**
+ * Metadata passed to {@link QueryOptionsBase.promptTemplate} for each `complete()` call.
+ */
+export interface PromptTemplateContext {
+  /** Full user message from the library (task + few-shot + CoT + schema outline, or retry text). */
+  builtPrompt: string;
+  /** Same as {@link QueryOptionsBase.prompt} — your task string only (not the library additions). */
+  taskPrompt: string;
+  /** 1-based index of this `complete()` call (matches {@link QueryOptionsBase.onAttempt}). */
+  attempt: number;
+  /** Maximum total attempts for this query (same as `maxRetries`). */
+  maxAttempts: number;
+  /** Expected root JSON shape for this query. */
+  rootKind: 'object' | 'array';
+  /** `true` when this is not the first attempt (`attempt > 1`). */
+  isRetry: boolean;
 }
 
 /**

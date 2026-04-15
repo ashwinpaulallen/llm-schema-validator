@@ -10,6 +10,8 @@ import { buildInitialPrompt, buildRetryPrompt, type RootPromptShape } from './pr
 import { extractJSON } from './parser.js';
 import type {
   ArrayRootFieldSchema,
+  FewShotExample,
+  PromptTemplateContext,
   QueryArrayOptions,
   QueryObjectOptions,
   QueryOptions,
@@ -68,6 +70,30 @@ function rootShapeFromOptions(options: QueryOptions): RootPromptShape {
     return { kind: 'array', arraySchema: options.arraySchema };
   }
   return { kind: 'object', schema: options.schema };
+}
+
+function assertFewShotMatchesRoot(
+  fewShot: readonly FewShotExample[] | undefined,
+  rootKind: 'object' | 'array',
+): void {
+  if (!fewShot?.length) return;
+  for (let i = 0; i < fewShot.length; i++) {
+    const ex = fewShot[i]!;
+    if (typeof ex.input !== 'string') {
+      throw new TypeError(`[llm-schema-validator] fewShot[${i}].input must be a string`);
+    }
+    if (rootKind === 'object') {
+      if (!isPlainObject(ex.output)) {
+        throw new TypeError(
+          `[llm-schema-validator] fewShot[${i}].output must be a plain object when rootType is 'object' (or omitted)`,
+        );
+      }
+    } else if (!Array.isArray(ex.output)) {
+      throw new TypeError(
+        `[llm-schema-validator] fewShot[${i}].output must be an array when rootType is 'array'`,
+      );
+    }
+  }
 }
 
 function effectiveRetryBackoffMultiplier(options: QueryOptions): number {
@@ -145,6 +171,31 @@ function notifyAttempt(
   options.onAttempt?.(attempt, errors);
 }
 
+/** Apply optional `promptTemplate` after the library builds the user message. */
+function finalizePrompt(
+  builtPrompt: string,
+  options: QueryOptions,
+  attempt: number,
+  rootKind: 'object' | 'array',
+  maxAttempts: number,
+): string {
+  const fn = options.promptTemplate;
+  if (fn === undefined) return builtPrompt;
+  const ctx: PromptTemplateContext = {
+    builtPrompt,
+    taskPrompt: options.prompt,
+    attempt,
+    maxAttempts,
+    rootKind,
+    isRetry: attempt > 1,
+  };
+  const out = fn(ctx);
+  if (typeof out !== 'string') {
+    throw new TypeError('[llm-schema-validator] promptTemplate must return a string');
+  }
+  return out;
+}
+
 /**
  * Run the LLM with schema-aware prompts, parse/coerce/validate, and retry on failure.
  */
@@ -169,9 +220,19 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
   const rootShape = rootShapeFromOptions(options);
   const isArrayRoot = rootShape.kind === 'array';
   const arraySchema = isArrayRoot ? rootShape.arraySchema : undefined;
+  const rootKind = isArrayRoot ? 'array' : 'object';
+  assertFewShotMatchesRoot(options.fewShot, rootKind);
+  const fewShot = options.fewShot;
+  const chainOfThought = options.chainOfThought === true;
 
   const allErrors: string[] = [];
-  let prompt = buildInitialPrompt(options.prompt, rootShape);
+  let prompt = finalizePrompt(
+    buildInitialPrompt(options.prompt, rootShape, fewShot, chainOfThought),
+    options,
+    1,
+    rootKind,
+    maxAttempts,
+  );
   let lastCoerced: Record<string, unknown> | unknown[] | null = null;
   let lastRaw = '';
 
@@ -219,11 +280,19 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       log('extractJSON error:', msg);
 
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(
-          options.prompt,
-          rootShape,
-          raw,
-          parseFailureErrors(msg, raw, isArrayRoot ? 'array' : 'object'),
+        prompt = finalizePrompt(
+          buildRetryPrompt(
+            options.prompt,
+            rootShape,
+            raw,
+            parseFailureErrors(msg, raw, isArrayRoot ? 'array' : 'object'),
+            fewShot,
+            chainOfThought,
+          ),
+          options,
+          attempt + 1,
+          rootKind,
+          maxAttempts,
         );
       }
       continue;
@@ -237,7 +306,20 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
         allErrors.push(`Attempt ${attempt}: ${msg}`);
         log('validation skipped:', msg);
         if (attempt < maxAttempts) {
-          prompt = buildRetryPrompt(options.prompt, rootShape, raw, rootArrayTypeError(parsed));
+          prompt = finalizePrompt(
+            buildRetryPrompt(
+              options.prompt,
+              rootShape,
+              raw,
+              rootArrayTypeError(parsed),
+              fewShot,
+              chainOfThought,
+            ),
+            options,
+            attempt + 1,
+            rootKind,
+            maxAttempts,
+          );
         }
         continue;
       }
@@ -279,7 +361,13 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       }
 
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(options.prompt, rootShape, raw, validationErrors);
+        prompt = finalizePrompt(
+          buildRetryPrompt(options.prompt, rootShape, raw, validationErrors, fewShot, chainOfThought),
+          options,
+          attempt + 1,
+          rootKind,
+          maxAttempts,
+        );
       }
       continue;
     }
@@ -290,7 +378,13 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       allErrors.push(`Attempt ${attempt}: ${msg}`);
       log('validation skipped:', msg);
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(options.prompt, rootShape, raw, rootObjectTypeError(parsed));
+        prompt = finalizePrompt(
+          buildRetryPrompt(options.prompt, rootShape, raw, rootObjectTypeError(parsed), fewShot, chainOfThought),
+          options,
+          attempt + 1,
+          rootKind,
+          maxAttempts,
+        );
       }
       continue;
     }
@@ -333,7 +427,13 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     if (attempt < maxAttempts) {
-      prompt = buildRetryPrompt(options.prompt, rootShape, raw, validationErrors);
+      prompt = finalizePrompt(
+        buildRetryPrompt(options.prompt, rootShape, raw, validationErrors, fewShot, chainOfThought),
+        options,
+        attempt + 1,
+        rootKind,
+        maxAttempts,
+      );
     }
   }
 

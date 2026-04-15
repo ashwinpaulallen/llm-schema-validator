@@ -21,6 +21,131 @@ function opts(
 }
 
 describe('executeWithRetry', () => {
+  it('throws when fewShot output is not a plain object for object root', async () => {
+    const provider = { complete: vi.fn() };
+    await expect(
+      executeWithRetry(
+        opts({
+          provider,
+          fewShot: [{ input: 'x', output: [1, 2] as unknown }],
+        }),
+      ),
+    ).rejects.toThrow(/fewShot\[0\].*plain object/);
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
+
+  it('throws when fewShot input is not a string', async () => {
+    const provider = { complete: vi.fn() };
+    await expect(
+      executeWithRetry(
+        opts({
+          provider,
+          fewShot: [{ input: 1 as unknown as string, output: {} }],
+        }),
+      ),
+    ).rejects.toThrow(/fewShot\[0\].*input must be a string/);
+  });
+
+  it('throws when fewShot output is not an array for array root', async () => {
+    const provider = { complete: vi.fn() };
+    await expect(
+      executeWithRetry({
+        prompt: 'List.',
+        rootType: 'array',
+        arraySchema: {
+          type: 'array',
+          required: true,
+          itemType: 'string',
+        },
+        provider,
+        maxRetries: 1,
+        fewShot: [{ input: 'a', output: { x: 1 } }],
+      }),
+    ).rejects.toThrow(/fewShot\[0\].*must be an array when rootType is 'array'/);
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
+
+  it('applies promptTemplate to the built prompt before complete', async () => {
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"answer": 42}'),
+    };
+    await executeWithRetry(
+      opts({
+        provider,
+        promptTemplate: (ctx) => `[HOUSE]\n${ctx.builtPrompt}`,
+      }),
+    );
+    const arg = provider.complete.mock.calls[0]![0] as string;
+    expect(arg.startsWith('[HOUSE]')).toBe(true);
+    expect(arg).toContain('Return JSON with answer 42');
+    expect(arg).toContain('Match this shape');
+  });
+
+  it('passes PromptTemplateContext with attempt and isRetry on retries', async () => {
+    const seen: { attempt: number; isRetry: boolean; taskPrompt: string }[] = [];
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"answer": "not"}')
+        .mockResolvedValueOnce('{"answer": 42}'),
+    };
+    await executeWithRetry(
+      opts({
+        provider,
+        maxRetries: 2,
+        coerce: false,
+        promptTemplate: (ctx) => {
+          seen.push({ attempt: ctx.attempt, isRetry: ctx.isRetry, taskPrompt: ctx.taskPrompt });
+          return ctx.builtPrompt;
+        },
+      }),
+    );
+    expect(seen).toEqual([
+      { attempt: 1, isRetry: false, taskPrompt: 'Return JSON with answer 42.' },
+      { attempt: 2, isRetry: true, taskPrompt: 'Return JSON with answer 42.' },
+    ]);
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws when promptTemplate does not return a string', async () => {
+    const provider = { complete: vi.fn() };
+    await expect(
+      executeWithRetry(
+        opts({
+          provider,
+          promptTemplate: () => null as unknown as string,
+        }),
+      ),
+    ).rejects.toThrow(/promptTemplate must return a string/);
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
+
+  it('passes chainOfThought instructions to provider.complete', async () => {
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"answer": 42}'),
+    };
+    await executeWithRetry(opts({ provider, chainOfThought: true }));
+    const arg = provider.complete.mock.calls[0]![0] as string;
+    expect(arg).toMatch(/Reasoning:/i);
+    expect(arg).toContain('step by step');
+  });
+
+  it('passes fewShot text to provider.complete', async () => {
+    const provider = {
+      complete: vi.fn().mockResolvedValue('{"answer": 42}'),
+    };
+    await executeWithRetry(
+      opts({
+        provider,
+        fewShot: [{ input: 'demo', output: { answer: 1 } }],
+      }),
+    );
+    const arg = provider.complete.mock.calls[0]![0] as string;
+    expect(arg).toContain('demo');
+    expect(arg).toContain('Examples');
+    expect(arg).toContain('"answer"');
+  });
+
   it('returns success on first valid response', async () => {
     const provider = {
       complete: vi.fn().mockResolvedValue('{"answer": 42}'),

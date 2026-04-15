@@ -24,6 +24,9 @@ export { validate, validateRootArray } from './validator.js';
  * For an object root, `data` is inferred from `schema` when you use {@link defineSchema} (see {@link InferSchema}).
  * For {@link QueryArrayOptions}, `data` is inferred from `arraySchema` (see {@link InferFieldValue}).
  * Use **`validate`** on options for cross-field rules after per-field validation (object or array root).
+ * Use **`fewShot`** for input → output example pairs injected into the user message (`FewShotExample` in `types`).
+ * Set **`chainOfThought: true`** to ask for reasoning in plain text before the final JSON (more tokens, often better on hard extractions).
+ * Use **`promptTemplate`** to post-process the fully built user message before each `complete()` — receives **`PromptTemplateContext`** (`builtPrompt`, `taskPrompt`, `attempt`, `maxAttempts`, `rootKind`, `isRetry`).
  */
 export function query<S extends Schema>(options: QueryObjectOptions<S>): Promise<QueryResult<InferSchema<S>>>;
 

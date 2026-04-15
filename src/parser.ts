@@ -23,6 +23,11 @@
  *
  * 7) JSON array at root
  *    `[{"name": "John"}]` → `[{ name: "John" }]`
+ *
+ * 8) Chain-of-thought / multiple JSON blobs
+ *    Prose with two top-level objects — the **last** root-level object (not nested inside another
+ *    candidate) is preferred, so reasoning can mention illustrative `{"x":1}` before the final answer.
+ *    Nested structures still resolve to the **outermost** object (inner spans are dropped).
  */
 
 import { MAX_ERROR_SNIPPET } from './constants.js';
@@ -112,16 +117,43 @@ function extractBalancedJson(source: string, start: number): string | null {
   return null;
 }
 
-/** Collect balanced JSON substrings starting at each `{` or `[`. */
-function collectBalancedCandidates(source: string): string[] {
-  const out: string[] = [];
+/** Span of a balanced `{…}` / `[…]` segment in `source` (end index inclusive). */
+interface BalancedSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+
+/** Collect every balanced JSON substring starting at each `{` or `[`. */
+function collectBalancedSpans(source: string): BalancedSpan[] {
+  const out: BalancedSpan[] = [];
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     if (c !== '{' && c !== '[') continue;
     const slice = extractBalancedJson(source, i);
-    if (slice) out.push(slice);
+    if (slice) out.push({ start: i, end: i + slice.length - 1, text: slice });
   }
   return out;
+}
+
+/** True if `inner` lies strictly inside `outer` (same span is not contained). */
+function isStrictlyContained(inner: BalancedSpan, outer: BalancedSpan): boolean {
+  if (inner.start === outer.start && inner.end === outer.end) return false;
+  return outer.start <= inner.start && inner.end <= outer.end;
+}
+
+/**
+ * Drop nested spans (keep outermost JSON only). Among remaining root-level spans, order by
+ * **descending start index** so we try the **last** top-level `{`/`[` first — best for chain-of-thought.
+ */
+function rootLevelSpansForProse(spans: BalancedSpan[]): BalancedSpan[] {
+  const roots = spans.filter((s) => !spans.some((o) => s !== o && isStrictlyContained(s, o)));
+  return roots.sort((a, b) => b.start - a.start);
+}
+
+/** Ordered candidate strings for “balanced JSON in prose” strategies. */
+function collectBalancedCandidatesOrdered(source: string): string[] {
+  return rootLevelSpansForProse(collectBalancedSpans(source)).map((s) => s.text);
 }
 
 function parseFirstMatchingFence(raw: string, mode: 'json' | 'generic'): unknown {
@@ -155,8 +187,8 @@ export function extractJSON(raw: string): unknown {
 
   const text = stripBom(raw).trim();
   const failures: string[] = [];
-  /** Computed once per call — reused by strategies that need balanced segments (see CODE_REVIEW #10). */
-  const balancedCandidates = collectBalancedCandidates(raw);
+  /** Computed once per call — root-level spans, last-first (CoT-safe). */
+  const balancedCandidates = collectBalancedCandidatesOrdered(raw);
 
   const strategies = [
     {
