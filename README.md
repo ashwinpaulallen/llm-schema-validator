@@ -25,7 +25,7 @@ Large language models often return JSON that is almost right: extra prose, markd
 
 You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMProvider`**. You get either typed **`data`** with **`success: true`**, or **`success: false`** with **`errors`**, or a thrown error when the run cannot complete (see [Errors](#errors-and-exceptions)).
 
-> **Note:** The `Schema` type is a **small TypeScript field map** used by this package. It is **not** the [JSON Schema](https://json-schema.org/) specification.
+> **Note:** The native **`Schema`** type is a small TypeScript field map. You can write it by hand, or convert from **[Zod](https://zod.dev/)** via **`fromZod()`** or from **[JSON Schema draft-07](https://json-schema.org/)** via **`fromJsonSchema()`** (e.g. OpenAPI components). The runtime model is not the full JSON Schema spec, but many common definitions map cleanly.
 
 ---
 
@@ -33,8 +33,13 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 
 - **`query()`** — End-to-end flow: prompt → model → parse → coerce → validate → retry.
 - **`defineSchema()`** — Typed helper so schema objects stay autocomplete-friendly.
+- **Adapters** — **`fromZod(z.object(…))`** and **`fromJsonSchema({ type: 'object', … })`** to reuse Zod or JSON Schema (draft-07) definitions as a **`Schema`**.
 - **Built-in providers** — `createOpenAIProvider` (Chat Completions), `createAnthropicProvider` (Messages API), `createCustomProvider` (any async `(prompt) => string`).
 - **Object or array root** — Default top-level JSON object, or **`rootType: 'array'`** with **`arraySchema`** for a list-shaped response.
+- **`anyOf` unions** — A field can list multiple alternatives (`string` **or** `number`, etc.); coercion tries branches **in order**.
+- **`const` literals** — Exact value match per field (discriminated unions, fixed `kind` strings).
+- **Per-field `validate`** — Custom `(value) => string | null` after built-in checks (e.g. “multiple of 5”).
+- **Cross-field `validate` on `query`** — `(data) => string | null` on the full coerced object (or root array) after per-field validation (e.g. `endDate > startDate`).
 - **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`); optional field **`examples`** for prompt hints (separate from strict **`enum`**).
 - **Retries** — Configurable **`maxRetries`**, optional **exponential backoff** via **`retryDelayMs`** / **`retryBackoffMultiplier`**.
 - **Standalone APIs** — **`validate`**, **`coerce`**, **`validateRootArray`**, **`coerceRootArray`** for JSON you already parsed elsewhere.
@@ -71,6 +76,14 @@ npm install llm-schema-validator openai @anthropic-ai/sdk
 ```
 
 The built-in adapters load their SDK **when you first call** `complete()` — you are not required to install both. Custom providers (`createCustomProvider`) need no vendor SDK.
+
+**Optional peer (only if you use `fromZod`):**
+
+```bash
+npm install zod
+```
+
+`fromJsonSchema` has no extra runtime dependency (types use **`@types/json-schema`** for authoring only).
 
 ---
 
@@ -128,10 +141,12 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 | `query` | Main API: run a schema-guided request; **`data` is inferred** from `schema` (object root) or `arraySchema` (array root; see `InferFieldValue`). |
 | `defineSchema` | Keeps schema literals narrow-typed so inference works. |
 | `validate`, `coerce`, `validateRootArray`, `coerceRootArray` | Standalone validation/coercion (same rules as inside `query`): object roots use `validate`/`coerce`; array roots use `validateRootArray`/`coerceRootArray` with a `type: 'array'` field schema. |
+| `fromZod`, `ZodAdapterError`, `InferFromZod` | Convert a Zod `z.object()` to a **`Schema`**; **`InferFromZod`** matches **`z.infer`**. Requires the **`zod`** package. |
+| `fromJsonSchema`, `JsonSchemaAdapterError` | Convert a **JSON Schema draft-07** object schema to a **`Schema`** (same-document **`$ref`** to `#/definitions` / `#/$defs` supported). |
 | `createOpenAIProvider`, `OpenAIProviderOptions`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createCustomProvider` | Ready-made `LLMProvider` implementations and their factory option types. |
 | `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
 | `LLMProvider`, `CompleteOptions`, `Schema`, `FieldSchema`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
-| `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError` | Error classes (see [Errors](#errors-and-exceptions)). |
+| `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError`, `ZodAdapterError`, `JsonSchemaAdapterError` | Error classes (see [Errors](#errors-and-exceptions)). |
 
 **ESM and CommonJS** — The build emits **ESM** under `dist/` (`import` / `"module"`) and **CommonJS** under `dist/cjs/` (`require` / `"main"`). The package root sets `"type": "module"`; `dist/cjs/package.json` sets `"type": "commonjs"` so Node resolves `require('llm-schema-validator')` to the CJS build. Use `import` from the same package name in ESM projects.
 
@@ -181,6 +196,7 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 | `onAttempt` | `(attempt: number, errors: string[]) => void?` | After each finished **`complete()`**: **`attempt`** is 1-based; **`errors`** is empty on success, otherwise messages for that attempt only (for metrics / custom logging). |
 | `signal` | `AbortSignal?` | Passed to each `provider.complete()` (and merged with `providerTimeoutMs`). Aborting ends the current attempt with an error (same as a failed provider call). |
 | `providerTimeoutMs` | `number?` | **Default: none.** Maximum time in milliseconds for **each** `complete()` call. Prevents hung LLM requests from blocking forever; uses `AbortSignal` and races the promise so `query` returns even if a custom provider ignores cancellation. |
+| `validate` | `(data) => string \| null?` | **Cross-field validation** after per-field checks on the **coerced** root: object root → `Record<string, unknown>`; array root → `unknown[]`. Return **`null`** if OK, or an error message string. |
 
 ### `QueryResult<T>`
 
@@ -193,12 +209,17 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 
 ### `FieldSchema`
 
+Either a **single-type** field (`type` + constraints) or a **union** field (`anyOf` — no top-level `type`).
+
 | Field | Type | Description |
 |--------|------|-------------|
-| `type` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'` | Expected JSON type after coercion. |
+| `type` | `'string' \| 'number' \| 'boolean' \| 'array' \| 'object'` | Expected JSON type after coercion. Omit when using **`anyOf`** only. |
+| `anyOf` | `AnyOfBranchSchema[]?` | Alternatives (JSON Schema–style). Each branch has its own `type` and constraints. Coercion tries branches **in order**; validation succeeds if **any** branch matches. |
 | `required` | `boolean` | If `true`, the key must be present. `null` is invalid unless `nullable` is `true`. |
 | `nullable` | `boolean?` | If `true`, JSON `null` is accepted and skips type checks for that field. |
+| `const` | `string \| number \| boolean \| null?` | Exact value after coercion (like JSON Schema **`const`**). |
 | `enum` | `(string \| number)[]?` | Value must equal one of the listed literals (after coercion). Use with `string`, `number`, or `boolean`. |
+| `validate` | `(value: unknown) => string \| null?` | **Per-field** custom check after built-in validation for that value. Return **`null`** if valid, else a short message. |
 | `minimum` / `maximum` | `number?` | Inclusive bounds for `type: 'number'`. |
 | `integer` | `boolean?` | If `true`, number must be an integer. |
 | `minLength` / `maxLength` | `number?` | String length (UTF-16 code units). |
@@ -223,6 +244,8 @@ By default the root value must be a **plain object** (not a bare array or primit
 | `ProviderError` | `provider.complete()` throws (network, SDK, HTTP). **Not** retried — the error propagates immediately. |
 | `QueryRetriesExhaustedError` | All attempts failed validation (or could not yield a valid root object/array), `fallbackToPartial` is `false` or there was nothing to return. Carries `attempts`, `collectedErrors`, and `lastRawSnippet`. |
 | `JSONExtractionError` | Used internally when parsing JSON from text; during `query()`, failed extractions trigger **retries** instead of surfacing this class directly. |
+| `ZodAdapterError` | `fromZod()` cannot represent a Zod construct (unsupported feature). |
+| `JsonSchemaAdapterError` | `fromJsonSchema()` cannot represent a JSON Schema fragment (unsupported keyword or shape). |
 
 ---
 
@@ -389,6 +412,47 @@ const schema = defineSchema({
   },
 });
 ```
+
+**`anyOf` (unions)** — Use **`anyOf: [ … ]`** instead of a top-level **`type`** when a field may be one of several shapes. Coercion runs each branch **in order** and picks the first that succeeds; validation accepts the first branch that fully matches.
+
+**`const`** — Pin an exact value after coercion (string, number, boolean, or JSON **`null`**). Handy for tags like **`kind: 'user' | 'bot'`** when paired with other fields.
+
+**Per-field `validate`** — Optional **`(value: unknown) => string | null`**. Runs **after** built-in checks; return **`null`** when valid.
+
+**Query-level `validate` (cross-field)** — On **`query({ … })`**, optional **`validate: (data) => string | null`** runs **after** all per-field checks on the coerced root (**object** or **array**). Failures appear in retries and in **`ValidationError`** with **`field: '(query)'`**.
+
+**`fromZod`**
+
+```typescript
+import { fromZod, query, InferFromZod } from 'llm-schema-validator';
+import { z } from 'zod';
+
+const zodSchema = z.object({
+  name: z.string(),
+  age: z.number().int().positive(),
+});
+
+const schema = fromZod(zodSchema);
+type Row = InferFromZod<typeof zodSchema>; // same idea as z.infer<typeof zodSchema>
+```
+
+Install **`zod`** when you use this path. Unsupported Zod features throw **`ZodAdapterError`**.
+
+**`fromJsonSchema`**
+
+```typescript
+import { fromJsonSchema } from 'llm-schema-validator';
+
+const schema = fromJsonSchema({
+  type: 'object',
+  required: ['id'],
+  properties: {
+    id: { type: 'string' },
+  },
+});
+```
+
+Expect **draft-07** object roots. Same-document **`$ref`** to **`#/definitions`** / **`#/$defs`** is supported; unsupported constructs throw **`JsonSchemaAdapterError`**. No runtime JSON Schema dependency (only this package’s internal model).
 
 ---
 

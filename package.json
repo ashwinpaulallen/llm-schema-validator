@@ -1,6 +1,6 @@
 {
   "name": "llm-schema-validator",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Structured LLM outputs with a TypeScript field schema: parse, coerce, validate, and retry. OpenAI, Anthropic, and custom providers.",
   "sideEffects": false,
   "type": "module",
