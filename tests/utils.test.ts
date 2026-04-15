@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isPlainObject, toLabel, truncate } from '../src/utils.js';
+import { mergeCompletionUsage, normalizeCompletionResult, isPlainObject, toLabel, truncate } from '../src/utils.js';
 
 describe('utils', () => {
   describe('isPlainObject', () => {
@@ -55,6 +55,32 @@ describe('utils', () => {
 
     it('trims whitespace before measuring', () => {
       expect(truncate('  hello  ', 10)).toBe('hello');
+    });
+  });
+
+  describe('normalizeCompletionResult', () => {
+    it('passes through strings', () => {
+      expect(normalizeCompletionResult('x')).toEqual({ text: 'x' });
+    });
+
+    it('reads LLMCompletion', () => {
+      expect(
+        normalizeCompletionResult({
+          text: 'hi',
+          usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+        }),
+      ).toEqual({ text: 'hi', usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } });
+    });
+  });
+
+  describe('mergeCompletionUsage', () => {
+    it('sums fields across attempts', () => {
+      expect(
+        mergeCompletionUsage(
+          { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          { promptTokens: 20, completionTokens: 8, totalTokens: 28 },
+        ),
+      ).toEqual({ promptTokens: 30, completionTokens: 13, totalTokens: 43 });
     });
   });
 });

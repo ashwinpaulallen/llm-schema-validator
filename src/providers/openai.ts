@@ -1,5 +1,5 @@
 import { ProviderError } from '../errors.js';
-import type { CompleteOptions, LLMProvider } from '../types.js';
+import type { CompleteOptions, LLMCompletion, LLMProvider, LLMProviderCompleteResult } from '../types.js';
 
 /** Options forwarded to `chat.completions.create` (same names as the OpenAI API). */
 export interface OpenAIProviderOptions {
@@ -84,7 +84,7 @@ export function createOpenAIProvider(
   let client: InstanceType<OpenAIModule['default']> | null = null;
 
   return {
-    async complete(prompt: string, init?: CompleteOptions): Promise<string> {
+    async complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult> {
       const openai = await loadOpenAIModule();
       if (!client) {
         client = new openai.default({ apiKey });
@@ -107,9 +107,26 @@ export function createOpenAIProvider(
           ? client.chat.completions.create(body, { signal: init.signal })
           : client.chat.completions.create(body))) as {
           choices?: Array<{ message?: { content?: string | null } }>;
+          usage?: {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            total_tokens?: number;
+          };
         };
         const text = res.choices?.[0]?.message?.content;
-        return typeof text === 'string' ? text : '';
+        const content = typeof text === 'string' ? text : '';
+        const u = res.usage;
+        const usage =
+          u &&
+          (u.prompt_tokens !== undefined || u.completion_tokens !== undefined || u.total_tokens !== undefined)
+            ? {
+                promptTokens: u.prompt_tokens,
+                completionTokens: u.completion_tokens,
+                totalTokens: u.total_tokens,
+              }
+            : undefined;
+        const out: LLMCompletion = usage ? { text: content, usage } : { text: content };
+        return out;
       } catch (error) {
         if (error instanceof openai.APIError) {
           throw new ProviderError(

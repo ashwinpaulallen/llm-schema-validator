@@ -10,14 +10,19 @@ import { buildInitialPrompt, buildRetryPrompt, type RootPromptShape } from './pr
 import { extractJSON } from './parser.js';
 import type {
   ArrayRootFieldSchema,
+  CompletionUsage,
+  FewShotExample,
+  PromptTemplateContext,
   QueryArrayOptions,
+  QueryCompletionSummary,
+  QueryLogLevel,
   QueryObjectOptions,
   QueryOptions,
   QueryResult,
   Schema,
   ValidationError,
 } from './types.js';
-import { isPlainObject, toLabel } from './utils.js';
+import { isPlainObject, mergeCompletionUsage, normalizeCompletionResult, toLabel } from './utils.js';
 import { validate, validateRootArray } from './validator.js';
 
 function parseFailureErrors(message: string, raw: string, root: 'object' | 'array'): ValidationError[] {
@@ -70,6 +75,30 @@ function rootShapeFromOptions(options: QueryOptions): RootPromptShape {
   return { kind: 'object', schema: options.schema };
 }
 
+function assertFewShotMatchesRoot(
+  fewShot: readonly FewShotExample[] | undefined,
+  rootKind: 'object' | 'array',
+): void {
+  if (!fewShot?.length) return;
+  for (let i = 0; i < fewShot.length; i++) {
+    const ex = fewShot[i]!;
+    if (typeof ex.input !== 'string') {
+      throw new TypeError(`[llm-schema-validator] fewShot[${i}].input must be a string`);
+    }
+    if (rootKind === 'object') {
+      if (!isPlainObject(ex.output)) {
+        throw new TypeError(
+          `[llm-schema-validator] fewShot[${i}].output must be a plain object when rootType is 'object' (or omitted)`,
+        );
+      }
+    } else if (!Array.isArray(ex.output)) {
+      throw new TypeError(
+        `[llm-schema-validator] fewShot[${i}].output must be an array when rootType is 'array'`,
+      );
+    }
+  }
+}
+
 function effectiveRetryBackoffMultiplier(options: QueryOptions): number {
   const m = options.retryBackoffMultiplier;
   if (m === undefined) return 2;
@@ -77,15 +106,62 @@ function effectiveRetryBackoffMultiplier(options: QueryOptions): number {
   return m;
 }
 
-function createDiagLog(options: QueryOptions): (msg: string, ...args: unknown[]) => void {
-  const { logger, debug } = options;
-  if (logger?.debug) {
-    return (msg, ...args) => logger.debug(`${LOG_PREFIX} ${msg}`, ...args);
+/** Order for filtering: only levels at or below `config` (more severe first) are emitted. */
+const LOG_LEVEL_ORDER: readonly QueryLogLevel[] = ['error', 'warn', 'info', 'debug'];
+
+function effectiveQueryLogLevel(options: QueryOptions): QueryLogLevel {
+  if (options.logLevel !== undefined) return options.logLevel;
+  if (options.debug === true) return 'debug';
+  if (options.logger?.log ?? options.logger?.debug) return 'debug';
+  return 'silent';
+}
+
+function shouldEmitAtLevel(config: QueryLogLevel, messageLevel: QueryLogLevel): boolean {
+  if (config === 'silent') return false;
+  const ci = LOG_LEVEL_ORDER.indexOf(config);
+  const mi = LOG_LEVEL_ORDER.indexOf(messageLevel);
+  if (ci === -1 || mi === -1) return false;
+  return mi <= ci;
+}
+
+function consoleSink(level: QueryLogLevel, full: string, ...args: unknown[]): void {
+  switch (level) {
+    case 'error':
+      console.error(full, ...args);
+      break;
+    case 'warn':
+      console.warn(full, ...args);
+      break;
+    case 'info':
+      console.info(full, ...args);
+      break;
+    case 'debug':
+    default:
+      console.debug(full, ...args);
+      break;
   }
-  if (debug) {
-    return (msg, ...args) => console.log(`${LOG_PREFIX} ${msg}`, ...args);
-  }
-  return () => {};
+}
+
+/** Emits a diagnostic line when {@link effectiveQueryLogLevel} allows `messageLevel`. */
+function createDiagLog(
+  options: QueryOptions,
+): (messageLevel: QueryLogLevel, msg: string, ...args: unknown[]) => void {
+  const cfg = effectiveQueryLogLevel(options);
+  const { logger } = options;
+
+  return (messageLevel, msg, ...args) => {
+    if (!shouldEmitAtLevel(cfg, messageLevel)) return;
+    const full = `${LOG_PREFIX} ${msg}`;
+    if (logger?.log) {
+      logger.log(messageLevel, full, ...args);
+      return;
+    }
+    if (logger?.debug) {
+      logger.debug(full, ...args);
+      return;
+    }
+    consoleSink(messageLevel, full, ...args);
+  };
 }
 
 function formatValidationAttemptErrors(errors: ValidationError[]): string[] {
@@ -137,12 +213,52 @@ function runQueryLevelValidate(run: () => string | null): ValidationError[] {
   }
 }
 
+/** Invokes `onAttempt` in a try/catch so user hooks cannot break retries or mask library errors. */
 function notifyAttempt(
   options: QueryOptions,
   attempt: number,
   errors: string[],
+  attemptDurationMs: number,
 ): void {
-  options.onAttempt?.(attempt, errors);
+  try {
+    options.onAttempt?.(attempt, errors, { durationMs: attemptDurationMs });
+  } catch {
+    /* Observability hooks must not affect query flow */
+  }
+}
+
+/** Invokes `onComplete` in a try/catch so user hooks cannot replace `ProviderError` / `QueryRetriesExhaustedError` / abort errors. */
+function emitQueryComplete(options: QueryOptions, summary: QueryCompletionSummary): void {
+  try {
+    options.onComplete?.(summary);
+  } catch {
+    /* Observability hooks must not affect query flow */
+  }
+}
+
+/** Apply optional `promptTemplate` after the library builds the user message. */
+function finalizePrompt(
+  builtPrompt: string,
+  options: QueryOptions,
+  attempt: number,
+  rootKind: 'object' | 'array',
+  maxAttempts: number,
+): string {
+  const fn = options.promptTemplate;
+  if (fn === undefined) return builtPrompt;
+  const ctx: PromptTemplateContext = {
+    builtPrompt,
+    taskPrompt: options.prompt,
+    attempt,
+    maxAttempts,
+    rootKind,
+    isRetry: attempt > 1,
+  };
+  const out = fn(ctx);
+  if (typeof out !== 'string') {
+    throw new TypeError('[llm-schema-validator] promptTemplate must return a string');
+  }
+  return out;
 }
 
 /**
@@ -158,6 +274,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
   }
 
+  const queryT0 = Date.now();
   const maxAttempts = Math.max(1, options.maxRetries ?? 3);
   const coerceEnabled = options.coerce ?? true;
   const fallbackToPartial = options.fallbackToPartial ?? false;
@@ -169,19 +286,43 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
   const rootShape = rootShapeFromOptions(options);
   const isArrayRoot = rootShape.kind === 'array';
   const arraySchema = isArrayRoot ? rootShape.arraySchema : undefined;
+  const rootKind = isArrayRoot ? 'array' : 'object';
+  assertFewShotMatchesRoot(options.fewShot, rootKind);
+  const fewShot = options.fewShot;
+  const chainOfThought = options.chainOfThought === true;
 
   const allErrors: string[] = [];
-  let prompt = buildInitialPrompt(options.prompt, rootShape);
+  let cumulativeUsage: CompletionUsage | undefined;
+  let prompt = finalizePrompt(
+    buildInitialPrompt(options.prompt, rootShape, fewShot, chainOfThought),
+    options,
+    1,
+    rootKind,
+    maxAttempts,
+  );
   let lastCoerced: Record<string, unknown> | unknown[] | null = null;
   let lastRaw = '';
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (attempt > 1 && retryDelayBase !== undefined) {
       const waitMs = retryDelayBase * Math.pow(backoffMult, attempt - 2);
-      log(`retry backoff ${waitMs}ms before attempt ${attempt}`);
-      await delayWithAbort(waitMs, options.signal);
+      log('debug', `retry backoff ${waitMs}ms before attempt ${attempt}`);
+      try {
+        await delayWithAbort(waitMs, options.signal);
+      } catch (e) {
+        const durationMs = Date.now() - queryT0;
+        emitQueryComplete(options, {
+          success: false,
+          attempts: attempt - 1,
+          durationMs,
+          errors: allErrors,
+          ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
+        });
+        throw e;
+      }
     }
-    log(`attempt ${attempt}/${maxAttempts}`);
+    const attemptStart = Date.now();
+    log('info', `attempt ${attempt}/${maxAttempts}`);
 
     let raw: string;
     try {
@@ -194,19 +335,30 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
               ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
             };
       const task = options.provider.complete(prompt, completeInit);
-      raw = await raceWithSignal(task, attemptSignal);
+      const completionRaw = await raceWithSignal(task, attemptSignal);
+      const normalized = normalizeCompletionResult(completionRaw);
+      raw = normalized.text;
+      cumulativeUsage = mergeCompletionUsage(cumulativeUsage, normalized.usage);
     } catch (e) {
       const wrapped = new ProviderError(
         `provider.complete() failed: ${e instanceof Error ? e.message : String(e)}`,
         e,
       );
-      notifyAttempt(options, attempt, [wrapped.message]);
+      notifyAttempt(options, attempt, [wrapped.message], Date.now() - attemptStart);
       allErrors.push(`Attempt ${attempt}: ${wrapped.message}`);
+      const durationMs = Date.now() - queryT0;
+      emitQueryComplete(options, {
+        success: false,
+        attempts: attempt,
+        durationMs,
+        errors: allErrors,
+        ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
+      });
       throw wrapped;
     }
 
     lastRaw = raw;
-    log('raw response:', raw);
+    log('debug', 'raw response:', raw);
 
     let parsed: unknown;
     try {
@@ -214,16 +366,24 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const parseErr = `could not extract JSON — ${msg}`;
-      notifyAttempt(options, attempt, [parseErr]);
+      notifyAttempt(options, attempt, [parseErr], Date.now() - attemptStart);
       allErrors.push(`Attempt ${attempt}: ${parseErr}`);
-      log('extractJSON error:', msg);
+      log('warn', 'extractJSON error:', msg);
 
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(
-          options.prompt,
-          rootShape,
-          raw,
-          parseFailureErrors(msg, raw, isArrayRoot ? 'array' : 'object'),
+        prompt = finalizePrompt(
+          buildRetryPrompt(
+            options.prompt,
+            rootShape,
+            raw,
+            parseFailureErrors(msg, raw, isArrayRoot ? 'array' : 'object'),
+            fewShot,
+            chainOfThought,
+          ),
+          options,
+          attempt + 1,
+          rootKind,
+          maxAttempts,
         );
       }
       continue;
@@ -233,11 +393,24 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       if (!Array.isArray(parsed)) {
         const msg =
           '[llm-schema-validator] Root value must be a JSON array (not an object or primitive).';
-        notifyAttempt(options, attempt, [msg]);
+        notifyAttempt(options, attempt, [msg], Date.now() - attemptStart);
         allErrors.push(`Attempt ${attempt}: ${msg}`);
-        log('validation skipped:', msg);
+        log('warn', 'validation skipped:', msg);
         if (attempt < maxAttempts) {
-          prompt = buildRetryPrompt(options.prompt, rootShape, raw, rootArrayTypeError(parsed));
+          prompt = finalizePrompt(
+            buildRetryPrompt(
+              options.prompt,
+              rootShape,
+              raw,
+              rootArrayTypeError(parsed),
+              fewShot,
+              chainOfThought,
+            ),
+            options,
+            attempt + 1,
+            rootKind,
+            maxAttempts,
+          );
         }
         continue;
       }
@@ -255,22 +428,33 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       }
 
       if (validationErrors.length === 0) {
-        log('validation: ok');
+        log('info', 'validation: ok');
       } else {
-        log('validation errors:', validationErrors);
+        log('warn', 'validation errors:', validationErrors);
       }
 
       if (validationErrors.length === 0) {
-        notifyAttempt(options, attempt, []);
+        const now = Date.now();
+        notifyAttempt(options, attempt, [], now - attemptStart);
+        const durationMs = now - queryT0;
+        emitQueryComplete(options, {
+          success: true,
+          attempts: attempt,
+          durationMs,
+          errors: [],
+          ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
+        });
         return {
           data: data as T,
           success: true,
           attempts: attempt,
           errors: [],
+          durationMs,
+          ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
         };
       }
 
-      notifyAttempt(options, attempt, formatValidationAttemptErrors(validationErrors));
+      notifyAttempt(options, attempt, formatValidationAttemptErrors(validationErrors), Date.now() - attemptStart);
 
       for (const err of validationErrors) {
         allErrors.push(
@@ -279,18 +463,30 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       }
 
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(options.prompt, rootShape, raw, validationErrors);
+        prompt = finalizePrompt(
+          buildRetryPrompt(options.prompt, rootShape, raw, validationErrors, fewShot, chainOfThought),
+          options,
+          attempt + 1,
+          rootKind,
+          maxAttempts,
+        );
       }
       continue;
     }
 
     if (!isPlainObject(parsed)) {
       const msg = '[llm-schema-validator] Root value must be a JSON object (not an array or primitive).';
-      notifyAttempt(options, attempt, [msg]);
+      notifyAttempt(options, attempt, [msg], Date.now() - attemptStart);
       allErrors.push(`Attempt ${attempt}: ${msg}`);
-      log('validation skipped:', msg);
+      log('warn', 'validation skipped:', msg);
       if (attempt < maxAttempts) {
-        prompt = buildRetryPrompt(options.prompt, rootShape, raw, rootObjectTypeError(parsed));
+        prompt = finalizePrompt(
+          buildRetryPrompt(options.prompt, rootShape, raw, rootObjectTypeError(parsed), fewShot, chainOfThought),
+          options,
+          attempt + 1,
+          rootKind,
+          maxAttempts,
+        );
       }
       continue;
     }
@@ -309,22 +505,33 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     if (validationErrors.length === 0) {
-      log('validation: ok');
+      log('info', 'validation: ok');
     } else {
-      log('validation errors:', validationErrors);
+      log('warn', 'validation errors:', validationErrors);
     }
 
     if (validationErrors.length === 0) {
-      notifyAttempt(options, attempt, []);
+      const now = Date.now();
+      notifyAttempt(options, attempt, [], now - attemptStart);
+      const durationMs = now - queryT0;
+      emitQueryComplete(options, {
+        success: true,
+        attempts: attempt,
+        durationMs,
+        errors: [],
+        ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
+      });
       return {
         data: data as T,
         success: true,
         attempts: attempt,
         errors: [],
+        durationMs,
+        ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
       };
     }
 
-    notifyAttempt(options, attempt, formatValidationAttemptErrors(validationErrors));
+    notifyAttempt(options, attempt, formatValidationAttemptErrors(validationErrors), Date.now() - attemptStart);
 
     for (const err of validationErrors) {
       allErrors.push(
@@ -333,16 +540,32 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     if (attempt < maxAttempts) {
-      prompt = buildRetryPrompt(options.prompt, rootShape, raw, validationErrors);
+      prompt = finalizePrompt(
+        buildRetryPrompt(options.prompt, rootShape, raw, validationErrors, fewShot, chainOfThought),
+        options,
+        attempt + 1,
+        rootKind,
+        maxAttempts,
+      );
     }
   }
 
   if (fallbackToPartial && lastCoerced !== null) {
+    const durationMs = Date.now() - queryT0;
+    emitQueryComplete(options, {
+      success: false,
+      attempts: maxAttempts,
+      durationMs,
+      errors: allErrors,
+      ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
+    });
     return {
       data: lastCoerced as T,
       success: false,
       attempts: maxAttempts,
       errors: allErrors,
+      durationMs,
+      ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
     };
   }
 
@@ -351,5 +574,13 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       ? `${lastRaw.slice(0, MAX_FINAL_ERROR_RAW_LENGTH)}…`
       : lastRaw;
 
-  throw new QueryRetriesExhaustedError(maxAttempts, allErrors, snippet);
+  const durationMs = Date.now() - queryT0;
+  emitQueryComplete(options, {
+    success: false,
+    attempts: maxAttempts,
+    durationMs,
+    errors: allErrors,
+    ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
+  });
+  throw new QueryRetriesExhaustedError(maxAttempts, allErrors, snippet, durationMs, cumulativeUsage);
 }

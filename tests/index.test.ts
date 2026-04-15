@@ -39,6 +39,59 @@ describe('query', () => {
     expect(result.data.x).toBe(99);
   });
 
+  it('aggregates usage from provider completions on success', async () => {
+    const schema = defineSchema({
+      x: { type: 'number', required: true },
+    });
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce({
+          text: '{"x":"bad"}',
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        })
+        .mockResolvedValueOnce({
+          text: '{"x": 1}',
+          usage: { promptTokens: 20, completionTokens: 3, totalTokens: 23 },
+        }),
+    };
+    const result = await query({
+      prompt: 'test',
+      schema,
+      provider,
+      maxRetries: 2,
+      coerce: false,
+    });
+    expect(result.success).toBe(true);
+    expect(result.usage).toEqual({
+      promptTokens: 30,
+      completionTokens: 8,
+      totalTokens: 38,
+    });
+  });
+
+  it('extracts the final JSON when chain-of-thought includes an earlier illustrative object', async () => {
+    const schema = defineSchema({
+      answer: { type: 'number', required: true },
+    });
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValue(
+          'Let me sketch: {"draft": true}\n\nSo the result is:\n{"answer": 42}',
+        ),
+    };
+    const result = await query({
+      prompt: 'Compute.',
+      schema,
+      provider,
+      chainOfThought: true,
+      maxRetries: 1,
+    });
+    expect(result.success).toBe(true);
+    expect(result.data.answer).toBe(42);
+  });
+
   it('supports root JSON array when rootType is array', async () => {
     const arraySchema = {
       type: 'array' as const,

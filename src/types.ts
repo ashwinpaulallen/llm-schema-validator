@@ -103,14 +103,88 @@ export interface CompleteOptions {
   systemPrompt?: string;
 }
 
-/** Adapter interface that any LLM provider must implement. */
-export interface LLMProvider {
-  complete(prompt: string, init?: CompleteOptions): Promise<string>;
+/**
+ * Token usage reported by some providers (OpenAI Chat Completions, Anthropic Messages, etc.).
+ * Omitted when the provider does not return counts.
+ */
+export interface CompletionUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 }
 
-/** Optional structured logging for {@link query} diagnostics (used when set, or when `debug` falls back to `console`). */
+/**
+ * Rich completion result when the provider exposes {@link CompletionUsage}.
+ * Custom providers may still return a plain `string` for backward compatibility.
+ */
+export interface LLMCompletion {
+  text: string;
+  usage?: CompletionUsage;
+}
+
+/** Return type of {@link LLMProvider.complete}. */
+export type LLMProviderCompleteResult = string | LLMCompletion;
+
+/** Adapter interface that any LLM provider must implement. */
+export interface LLMProvider {
+  complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult>;
+}
+
+/**
+ * Library diagnostic verbosity for {@link QueryOptionsBase.logLevel}.
+ * **`error` ≤ `warn` ≤ `info` ≤ `debug`** — setting **`info`** shows error, warn, and info lines, but not debug (e.g. raw model text).
+ */
+export type QueryLogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug';
+
+/** Optional structured logging for {@link query} diagnostics. */
 export interface QueryLogger {
-  debug(message: string, ...optionalParams: unknown[]): void;
+  /**
+   * Preferred sink: receives the severity, full message (including `[llm-schema-validator]` prefix), and any extra args.
+   */
+  log?(level: QueryLogLevel, message: string, ...optionalParams: unknown[]): void;
+  /**
+   * Legacy single-channel sink; used when {@link QueryLogger.log} is omitted.
+   * Receives the same prefixed message as before (no level argument).
+   */
+  debug?(message: string, ...optionalParams: unknown[]): void;
+}
+
+/**
+ * One few-shot pair: free-text {@link FewShotExample#input} and the expected root JSON
+ * {@link FewShotExample#output} (object or array, matching the query’s root shape).
+ */
+export interface FewShotExample {
+  /** Example user/task input the model should treat as analogous to the real prompt. */
+  input: string;
+  /**
+   * Expected JSON at the **root** — a plain object for default object-root queries, or a JSON array
+   * when using {@link QueryArrayOptions}.
+   */
+  output: unknown;
+}
+
+/** Per-attempt metadata passed to {@link QueryOptionsBase.onAttempt}. */
+export interface QueryAttemptMeta {
+  /** Wall-clock milliseconds for this attempt (after any backoff before this attempt, until `onAttempt` runs). */
+  durationMs: number;
+}
+
+/**
+ * Summary passed to {@link QueryOptionsBase.onComplete} — mirrors {@link QueryResult} fields except **`data`**.
+ */
+export interface QueryCompletionSummary {
+  success: boolean;
+  attempts: number;
+  /**
+   * Total wall-clock time for this `query` in milliseconds (same as {@link QueryResult#durationMs}).
+   */
+  durationMs: number;
+  /** Human-readable failure messages; empty when **`success`** is **`true`**. */
+  errors: readonly string[];
+  /**
+   * Aggregated token usage when reported (same as {@link QueryResult#usage}).
+   */
+  usage?: CompletionUsage;
 }
 
 /** Shared options for {@link query} (both object-root and array-root). */
@@ -140,15 +214,32 @@ export interface QueryOptionsBase {
   coerce?: boolean;
   /** @default false */
   fallbackToPartial?: boolean;
-  /** Log each attempt and validation outcome to `console` when `logger` is not set. */
+  /**
+   * Minimum diagnostic verbosity. **`silent`** by default unless **`debug: true`**, a **`logger`** is set, or **`logLevel`** is set explicitly.
+   * Takes precedence over {@link QueryOptionsBase.debug} when both are set.
+   */
+  logLevel?: QueryLogLevel;
+  /**
+   * @deprecated Use **`logLevel: 'debug'`** (or **`'info'`**, etc.) instead.
+   * When **`true`** and **`logLevel`** is omitted, effective level is **`debug`**.
+   */
   debug?: boolean;
-  /** When set, diagnostic messages go here instead of `console` (you may omit `debug` if you always provide a logger). */
+  /**
+   * When set, diagnostics go here (or to **`console`** with **`info`/`warn`/`debug`** when no logger).
+   * If only **`logger.debug`** is provided (no **`logger.log`**), all emitted lines use that single method (level filtering still applies).
+   */
   logger?: QueryLogger;
   /**
    * Called after each **`provider.complete()`** finishes: **`attempt`** is 1-based; **`errors`** is empty on success,
    * otherwise human-readable messages for that attempt only (no `Attempt N:` prefix — use **`attempt`** for indexing).
+   * **`meta`** is optional in the type so **`(attempt, errors) => …`** handlers stay assignable; the library **always** passes **`meta`** with **`durationMs`** (wall-clock for that attempt after any inter-attempt backoff, until this callback).
    */
-  onAttempt?: (attempt: number, errors: string[]) => void;
+  onAttempt?: (attempt: number, errors: string[], meta?: QueryAttemptMeta) => void;
+  /**
+   * Called once when the `query` finishes: **success**, **validation exhausted**, or **provider failure**
+   * (same shape as assembling from {@link QueryResult}, without `data`). Use for metrics without wrapping every call in try/catch.
+   */
+  onComplete?: (summary: QueryCompletionSummary) => void;
   /**
    * Abort the current attempt (and any in-flight provider request that respects `signal`).
    * Applies to each `provider.complete()` call; a new attempt uses the same outer signal state.
@@ -160,6 +251,43 @@ export interface QueryOptionsBase {
    * @default undefined (no timeout)
    */
   providerTimeoutMs?: number;
+  /**
+   * Optional full **input → output** examples injected into the user message (after `prompt`, before JSON rules).
+   * Improves adherence on complex schemas; each `output` must match the root shape (object vs array).
+   * On **retries**, a shorter few-shot block is placed **after** “Previous reply” / “Correct:” so validation context stays prominent.
+   */
+  fewShot?: readonly FewShotExample[];
+  /**
+   * When `true`, the prompt asks the model to **reason in plain text first**, then output the final JSON.
+   * Improves accuracy on hard extractions; uses more tokens.
+   * **`extractJSON`** prefers the **last** top-level JSON value when several appear (see parser docs).
+   * @default false
+   */
+  chainOfThought?: boolean;
+  /**
+   * Optional transform applied to the **fully built** user message (task + few-shot + JSON/schema instructions)
+   * immediately before each `provider.complete()` call. Use for house-style wrappers or prefixes/suffixes.
+   * Receives {@link PromptTemplateContext} so you can vary the wrapper by attempt, retry vs first try, etc.
+   */
+  promptTemplate?: (context: PromptTemplateContext) => string;
+}
+
+/**
+ * Metadata passed to {@link QueryOptionsBase.promptTemplate} for each `complete()` call.
+ */
+export interface PromptTemplateContext {
+  /** Full user message from the library (task + few-shot + CoT + schema outline, or retry text). */
+  builtPrompt: string;
+  /** Same as {@link QueryOptionsBase.prompt} — your task string only (not the library additions). */
+  taskPrompt: string;
+  /** 1-based index of this `complete()` call (matches {@link QueryOptionsBase.onAttempt}). */
+  attempt: number;
+  /** Maximum total attempts for this query (same as `maxRetries`). */
+  maxAttempts: number;
+  /** Expected root JSON shape for this query. */
+  rootKind: 'object' | 'array';
+  /** `true` when this is not the first attempt (`attempt > 1`). */
+  isRetry: boolean;
 }
 
 /**
@@ -202,6 +330,15 @@ export interface QueryResult<T> {
   success: boolean;
   attempts: number;
   errors: string[];
+  /**
+   * Total wall-clock time for this `query` in milliseconds (setup, all `complete()` calls, parsing/validation, and inter-attempt backoff).
+   */
+  durationMs: number;
+  /**
+   * Aggregated token counts across **all** `complete()` calls for this `query` (including failed attempts),
+   * when the provider reported usage. Omitted if no attempt returned usage data.
+   */
+  usage?: CompletionUsage;
 }
 
 /** A single validation failure against the expected schema. */

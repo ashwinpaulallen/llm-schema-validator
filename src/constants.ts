@@ -25,3 +25,25 @@ export const MAX_FINAL_ERROR_RAW_LENGTH = 2000;
 
 /** Maximum default value string length in prompt. */
 export const MAX_DEFAULT_VALUE_LENGTH = 40;
+
+/** Max length of each few-shot `input` when serialized into prompts. */
+export const MAX_FEWSHOT_INPUT_LENGTH = 4000;
+
+/** Max length of each few-shot stringified JSON `output` in prompts. */
+export const MAX_FEWSHOT_OUTPUT_JSON_LENGTH = 8000;
+
+/** Max total length of the few-shot block appended to the user message. */
+export const MAX_FEWSHOT_BLOCK_LENGTH = 12000;
+
+/** Max number of few-shot pairs included (additional entries are ignored). */
+export const MAX_FEWSHOT_EXAMPLES = 32;
+
+/** Stricter caps when embedding few-shot on **retry** prompts (keep fixes + previous reply prominent). */
+export const MAX_FEWSHOT_RETRY_EXAMPLES = 6;
+
+export const MAX_FEWSHOT_RETRY_INPUT_LENGTH = 1500;
+
+export const MAX_FEWSHOT_RETRY_OUTPUT_JSON_LENGTH = 4000;
+
+/** Max total few-shot size on retries (smaller than {@link MAX_FEWSHOT_BLOCK_LENGTH}). */
+export const MAX_FEWSHOT_RETRY_BLOCK_LENGTH = 4500;

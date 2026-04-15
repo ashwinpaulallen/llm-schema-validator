@@ -2,10 +2,25 @@ import {
   MAX_DEFAULT_VALUE_LENGTH,
   MAX_DESCRIPTION_LENGTH,
   MAX_EXAMPLES_PROMPT_LENGTH,
+  MAX_FEWSHOT_BLOCK_LENGTH,
+  MAX_FEWSHOT_EXAMPLES,
+  MAX_FEWSHOT_INPUT_LENGTH,
+  MAX_FEWSHOT_OUTPUT_JSON_LENGTH,
+  MAX_FEWSHOT_RETRY_BLOCK_LENGTH,
+  MAX_FEWSHOT_RETRY_EXAMPLES,
+  MAX_FEWSHOT_RETRY_INPUT_LENGTH,
+  MAX_FEWSHOT_RETRY_OUTPUT_JSON_LENGTH,
   MAX_PREVIOUS_RESPONSE_LENGTH,
 } from './constants.js';
 import { truncate } from './utils.js';
-import type { ArrayRootFieldSchema, FieldSchema, Schema, SimpleFieldSchema, ValidationError } from './types.js';
+import type {
+  ArrayRootFieldSchema,
+  FewShotExample,
+  FieldSchema,
+  Schema,
+  SimpleFieldSchema,
+  ValidationError,
+} from './types.js';
 import { isUnionField, syntheticFieldFromUnionBranch } from './validator.js';
 
 function trunc(s: string, max: number): string {
@@ -133,28 +148,97 @@ function describeRootShape(shape: RootPromptShape): string {
     : describeArrayRootOutline(shape.arraySchema);
 }
 
+function safeJsonStringify(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value, null, 2);
+    return trunc(s, maxLen);
+  } catch {
+    return '"[unserializable]"';
+  }
+}
+
+/** Where the few-shot block is placed — **retry** uses tighter limits so validation context stays visible. */
+export type FewShotPlacement = 'initial' | 'retry';
+
 /**
- * First-turn prompt: task + strict JSON-only rule + compact schema outline (types, req/opt, descriptions).
+ * Renders {@link FewShotExample} pairs for injection into the user message.
+ * **`retry`** uses fewer examples and smaller per-field caps so “Previous reply” / “Correct:” stay near the top of the prompt.
  */
-export function buildInitialPrompt(userPrompt: string, shape: RootPromptShape): string {
-  const outline = describeRootShape(shape);
-  const jsonKind = shape.kind === 'object' ? 'object' : 'array';
-  return `${userPrompt.trim()}
+export function formatFewShotBlock(
+  fewShot: readonly FewShotExample[] | undefined,
+  placement: FewShotPlacement = 'initial',
+): string {
+  if (!fewShot?.length) return '';
+  const retry = placement === 'retry';
+  const maxExamples = retry ? MAX_FEWSHOT_RETRY_EXAMPLES : MAX_FEWSHOT_EXAMPLES;
+  const maxIn = retry ? MAX_FEWSHOT_RETRY_INPUT_LENGTH : MAX_FEWSHOT_INPUT_LENGTH;
+  const maxOut = retry ? MAX_FEWSHOT_RETRY_OUTPUT_JSON_LENGTH : MAX_FEWSHOT_OUTPUT_JSON_LENGTH;
+  const maxBlock = retry ? MAX_FEWSHOT_RETRY_BLOCK_LENGTH : MAX_FEWSHOT_BLOCK_LENGTH;
+  const header = retry
+    ? 'Few-shot reference (abbreviated on retry — prioritize the validation fixes above):'
+    : 'Examples (input → JSON output; mirror this pattern for your task):';
+  const lines: string[] = [header, ''];
+  const cap = Math.min(fewShot.length, maxExamples);
+  for (let i = 0; i < cap; i++) {
+    const ex = fewShot[i]!;
+    const inputStr = trunc(ex.input.trim(), maxIn);
+    const outStr = safeJsonStringify(ex.output, maxOut);
+    lines.push(`Example ${i + 1}`);
+    lines.push(`Input:\n${inputStr}`);
+    lines.push('');
+    lines.push(`Output:\n${outStr}`);
+    lines.push('');
+  }
+  let block = lines.join('\n').trimEnd();
+  block = trunc(block, maxBlock);
+  return block;
+}
 
-Output: ONLY one JSON ${jsonKind} (valid JSON). No markdown, no \`\`\`, no explanation before or after.
+function chainOfThoughtInstructions(jsonKind: 'object' | 'array'): string {
+  return `Reasoning: Work through the task step by step in plain text first. When you are finished reasoning, output exactly one JSON ${jsonKind} that matches the shape below.
 
-Match this shape:
-${outline}`;
+Put that JSON **after** your reasoning. The JSON must be valid and may appear alone on trailing lines—do not wrap it in markdown code fences. Avoid other \`{…}\` or \`[…]\` JSON-like fragments in your reasoning so the final answer is unambiguous.
+
+Final output shape:`;
+}
+
+function strictJsonInstructions(jsonKind: 'object' | 'array'): string {
+  return `Output: ONLY one JSON ${jsonKind} (valid JSON). No markdown, no \`\`\`, no explanation before or after.
+
+Match this shape:`;
 }
 
 /**
- * Retry prompt: original task + verbatim previous reply + numbered fixes from validation errors.
+ * First-turn prompt: task + strict JSON-only rule + compact schema outline (types, req/opt, descriptions).
+ */
+export function buildInitialPrompt(
+  userPrompt: string,
+  shape: RootPromptShape,
+  fewShot?: readonly FewShotExample[],
+  chainOfThought?: boolean,
+): string {
+  const outline = describeRootShape(shape);
+  const jsonKind = shape.kind === 'object' ? 'object' : 'array';
+  const fewBlock = formatFewShotBlock(fewShot, 'initial');
+  const mid = fewBlock ? `\n\n${fewBlock}\n\n` : '\n\n';
+  const tail = chainOfThought
+    ? `${chainOfThoughtInstructions(jsonKind)}
+${outline}`
+    : `${strictJsonInstructions(jsonKind)}
+${outline}`;
+  return `${userPrompt.trim()}${mid}${tail}`;
+}
+
+/**
+ * Retry prompt: task, then **previous reply + fixes first** (so error context is not buried), then an abbreviated few-shot block if any, then output rules + schema outline.
  */
 export function buildRetryPrompt(
   userPrompt: string,
   shape: RootPromptShape,
   previousResponse: string,
   errors: ValidationError[],
+  fewShot?: readonly FewShotExample[],
+  chainOfThought?: boolean,
 ): string {
   const outline = describeRootShape(shape);
   const prev = trunc(previousResponse, MAX_PREVIOUS_RESPONSE_LENGTH);
@@ -172,16 +256,20 @@ export function buildRetryPrompt(
     : emptyHint;
 
   const jsonKind = shape.kind === 'object' ? 'object' : 'array';
+  const fewBlock = formatFewShotBlock(fewShot, 'retry');
+  const fewSection = fewBlock ? `\n\n${fewBlock}\n\n` : '';
+  const afterCorrect = chainOfThought
+    ? `${chainOfThoughtInstructions(jsonKind)}
+${outline}`
+    : `Output: ONLY one JSON ${jsonKind}. No markdown or extra text.
+
+Match:
+${outline}`;
   return `${userPrompt.trim()}
 
 Previous reply (invalid):
 ${prev}
 
 Correct:
-${fixes}
-
-Output: ONLY one JSON ${jsonKind}. No markdown or extra text.
-
-Match:
-${outline}`;
+${fixes}${fewSection}${afterCorrect}`;
 }

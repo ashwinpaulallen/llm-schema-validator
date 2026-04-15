@@ -22,6 +22,23 @@ describe('extractJSON', () => {
     expect(extractJSON(raw)).toEqual({ name: 'John' });
   });
 
+  it('prefers last top-level JSON when multiple appear (chain-of-thought)', () => {
+    const raw = `Thinking aloud.
+Illustrative: {"draft": true}
+Final:
+{"answer": 42, "ok": true}`;
+    expect(extractJSON(raw)).toEqual({ answer: 42, ok: true });
+  });
+
+  it('returns outer JSON when nested (inner span is not picked over parent)', () => {
+    expect(extractJSON('See {"outer": {"inner": 1}} end')).toEqual({ outer: { inner: 1 } });
+  });
+
+  it('prefers last of two adjacent top-level objects', () => {
+    const raw = 'A: {"a": 1} B: {"b": 2}';
+    expect(extractJSON(raw)).toEqual({ b: 2 });
+  });
+
   it('fixes trailing commas on object', () => {
     expect(extractJSON('{"name": "John",}')).toEqual({ name: 'John' });
   });
