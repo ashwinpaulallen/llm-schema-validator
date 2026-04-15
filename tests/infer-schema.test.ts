@@ -44,6 +44,27 @@ describe('InferSchema', () => {
     expectTypeOf<Out['items']>().toEqualTypeOf<Array<{ n: number }>>();
   });
 
+  it('infers const as a literal type', () => {
+    const schema = defineSchema({
+      kind: { type: 'string' as const, required: true, const: 'invoice' as const },
+    });
+    expect(schema.kind.const).toBe('invoice');
+    type Out = InferSchema<typeof schema>;
+    expectTypeOf<Out['kind']>().toEqualTypeOf<'invoice'>();
+  });
+
+  it('infers anyOf as a union of branch value types', () => {
+    const schema = defineSchema({
+      id: {
+        required: true,
+        anyOf: [{ type: 'string' as const }, { type: 'number' as const }],
+      },
+    });
+    expect(schema.id.anyOf).toHaveLength(2);
+    type Out = InferSchema<typeof schema>;
+    expectTypeOf<Out['id']>().toEqualTypeOf<string | number>();
+  });
+
   it('infers string enum literals', () => {
     const schema = defineSchema({
       status: {

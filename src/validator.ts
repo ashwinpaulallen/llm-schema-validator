@@ -1,5 +1,13 @@
 import { isPlainObject, toLabel } from './utils.js';
-import type { FieldSchema, Schema, ValidationError } from './types.js';
+import type {
+  AnyOfBranchSchema,
+  ArrayRootFieldSchema,
+  FieldSchema,
+  Schema,
+  SimpleFieldSchema,
+  UnionFieldSchema,
+  ValidationError,
+} from './types.js';
 
 /** Build a {@link ValidationError} with a consistent `received` label. */
 function issue(field: string, expected: string, received: unknown, message: string): ValidationError {
@@ -88,7 +96,7 @@ function validateDate(value: string, path: string): ValidationError[] {
 
 function validateStringFormat(
   value: string,
-  format: NonNullable<FieldSchema['format']>,
+  format: NonNullable<SimpleFieldSchema['format']>,
   path: string,
 ): ValidationError[] {
   switch (format) {
@@ -118,7 +126,21 @@ function compilePattern(source: string): RegExp | null {
   }
 }
 
-function validateAllowedEnum(value: unknown, field: FieldSchema, path: string): ValidationError[] {
+/** JSON `const`: value must be exactly `field.const` (after coercion). Uses `Object.is` for primitives. */
+function validateConst(value: unknown, field: SimpleFieldSchema, path: string): ValidationError[] {
+  if (field.const === undefined) return [];
+  if (Object.is(value, field.const)) return [];
+  return [
+    issue(
+      path,
+      `literal ${JSON.stringify(field.const)}`,
+      value,
+      `[llm-schema-validator] Field "${path}" must be exactly ${JSON.stringify(field.const)}`,
+    ),
+  ];
+}
+
+function validateAllowedEnum(value: unknown, field: SimpleFieldSchema, path: string): ValidationError[] {
   const allowed = field.enum;
   if (!allowed || allowed.length === 0) return [];
   const ok = allowed.some((v) => Object.is(v, value));
@@ -133,7 +155,7 @@ function validateAllowedEnum(value: unknown, field: FieldSchema, path: string): 
   ];
 }
 
-function validateNumberConstraints(value: number, field: FieldSchema, path: string): ValidationError[] {
+function validateNumberConstraints(value: number, field: SimpleFieldSchema, path: string): ValidationError[] {
   const errors: ValidationError[] = [];
   if (field.integer === true && !Number.isInteger(value)) {
     errors.push(
@@ -171,7 +193,7 @@ function validateNumberConstraints(value: number, field: FieldSchema, path: stri
   return errors;
 }
 
-function validateStringConstraints(value: string, field: FieldSchema, path: string): ValidationError[] {
+function validateStringConstraints(value: string, field: SimpleFieldSchema, path: string): ValidationError[] {
   const errors: ValidationError[] = [];
   const len = value.length;
   if (typeof field.minLength === 'number' && Number.isInteger(field.minLength) && field.minLength >= 0) {
@@ -223,7 +245,44 @@ function validateStringConstraints(value: string, field: FieldSchema, path: stri
   return errors;
 }
 
-function validateArrayBounds(arr: unknown[], field: FieldSchema, path: string): ValidationError[] {
+/** Runs {@link FieldSchema.validate} when set; only after built-in checks reported no errors for this value. */
+export function runCustomValidate(value: unknown, field: FieldSchema, path: string): ValidationError[] {
+  const fn = field.validate;
+  if (fn === undefined) return [];
+  try {
+    const msg = fn(value);
+    if (msg === null || msg === undefined) return [];
+    if (typeof msg !== 'string') {
+      return [
+        issue(
+          path,
+          '(custom validation)',
+          value,
+          `[llm-schema-validator] Field "${path}" custom validate must return string | null`,
+        ),
+      ];
+    }
+    const message =
+      msg.length > 0
+        ? msg.startsWith('[llm-schema-validator]')
+          ? msg
+          : `[llm-schema-validator] Field "${path}": ${msg}`
+        : `[llm-schema-validator] Field "${path}" failed custom validation`;
+    return [issue(path, '(custom validation)', value, message)];
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return [
+      issue(
+        path,
+        '(custom validation)',
+        value,
+        `[llm-schema-validator] Field "${path}" custom validate threw: ${detail}`,
+      ),
+    ];
+  }
+}
+
+function validateArrayBounds(arr: unknown[], field: SimpleFieldSchema, path: string): ValidationError[] {
   const errors: ValidationError[] = [];
   const n = arr.length;
   if (typeof field.minItems === 'number' && Number.isInteger(field.minItems) && field.minItems >= 0) {
@@ -253,7 +312,10 @@ function validateArrayBounds(arr: unknown[], field: FieldSchema, path: string): 
   return errors;
 }
 
-function typeExpectedLabel(field: FieldSchema): string {
+function typeExpectedLabel(field: SimpleFieldSchema): string {
+  if (field.const !== undefined) {
+    return `literal ${JSON.stringify(field.const)}`;
+  }
   if (field.type === 'string' && field.format) {
     return `string (format: ${field.format})`;
   }
@@ -265,7 +327,7 @@ function typeExpectedLabel(field: FieldSchema): string {
 
 function validatePrimitiveItemType(
   item: unknown,
-  itemType: NonNullable<FieldSchema['itemType']>,
+  itemType: NonNullable<SimpleFieldSchema['itemType']>,
   path: string,
 ): ValidationError[] {
   switch (itemType) {
@@ -291,7 +353,7 @@ function validatePrimitiveItemType(
 
 function validateArrayItems(
   arr: unknown[],
-  field: FieldSchema,
+  field: SimpleFieldSchema,
   path: string,
 ): ValidationError[] {
   if (!field.itemType) return [];
@@ -324,12 +386,82 @@ function validateArrayItems(
   return errors;
 }
 
+export function isUnionField(field: FieldSchema): field is UnionFieldSchema {
+  return 'anyOf' in field && Array.isArray(field.anyOf) && field.anyOf.length > 0;
+}
+
+function branchSummaryLabel(branch: AnyOfBranchSchema): string {
+  let s = branch.type;
+  if (branch.const !== undefined) s += `=${JSON.stringify(branch.const)}`;
+  if (branch.type === 'string' && branch.format) s += `:${branch.format}`;
+  if (branch.enum && branch.enum.length > 0) s += ' (enum)';
+  return s;
+}
+
+/** Merge a union branch with parent metadata for validation/coercion of that alternative. */
+export function syntheticFieldFromUnionBranch(
+  parent: UnionFieldSchema,
+  branch: AnyOfBranchSchema,
+): SimpleFieldSchema {
+  const { anyOf: _anyOf, ...parentRest } = parent;
+  return {
+    ...parentRest,
+    ...branch,
+    type: branch.type,
+    required: true,
+  } as SimpleFieldSchema;
+}
+
+function validateAnyOf(value: unknown, field: UnionFieldSchema, path: string): ValidationError[] {
+  if (value === null && field.nullable) return [];
+
+  const branches = field.anyOf;
+  if (!branches || branches.length === 0) {
+    return [
+      issue(
+        path,
+        'non-empty anyOf',
+        value,
+        '[llm-schema-validator] anyOf must list at least one branch',
+      ),
+    ];
+  }
+
+  for (const branch of branches) {
+    const synthetic = syntheticFieldFromUnionBranch(field, branch);
+    const errs = validateSimpleFieldTypeAndNested(value, synthetic, path);
+    if (errs.length === 0) {
+      if (field.validate) {
+        return runCustomValidate(value, { validate: field.validate } as FieldSchema, path);
+      }
+      return [];
+    }
+  }
+
+  const summary = branches.map((b) => branchSummaryLabel(b)).join(' | ');
+  return [
+    issue(
+      path,
+      `anyOf(${summary})`,
+      value,
+      `[llm-schema-validator] Field "${path}" must match one of the anyOf alternatives`,
+    ),
+  ];
+}
+
 /**
  * Validate `value` against `field` at `path`, including nested object/array rules.
  */
-function validateTypeAndNested(
+export function validateTypeAndNested(value: unknown, field: FieldSchema, path: string): ValidationError[] {
+  if (isUnionField(field)) {
+    return validateAnyOf(value, field, path);
+  }
+  return validateSimpleFieldTypeAndNested(value, field, path);
+}
+
+function validateSimpleFieldTypeAndNested(
   value: unknown,
-  field: FieldSchema,
+  field: SimpleFieldSchema,
   path: string,
 ): ValidationError[] {
   const errors: ValidationError[] = [];
@@ -342,11 +474,16 @@ function validateTypeAndNested(
         );
         return errors;
       }
+      errors.push(...validateConst(value, field, path));
+      if (errors.length > 0) return errors;
       if (field.format) {
         errors.push(...validateStringFormat(value, field.format, path));
       }
       errors.push(...validateAllowedEnum(value, field, path));
       errors.push(...validateStringConstraints(value, field, path));
+      if (errors.length === 0) {
+        errors.push(...runCustomValidate(value, field, path));
+      }
       return errors;
     }
     case 'number': {
@@ -354,8 +491,13 @@ function validateTypeAndNested(
         errors.push(issue(path, 'number', value, `[llm-schema-validator] Field "${path}" must be a number`));
         return errors;
       }
+      errors.push(...validateConst(value, field, path));
+      if (errors.length > 0) return errors;
       errors.push(...validateNumberConstraints(value, field, path));
       errors.push(...validateAllowedEnum(value, field, path));
+      if (errors.length === 0) {
+        errors.push(...runCustomValidate(value, field, path));
+      }
       return errors;
     }
     case 'boolean': {
@@ -363,7 +505,12 @@ function validateTypeAndNested(
         errors.push(issue(path, 'boolean', value, `[llm-schema-validator] Field "${path}" must be a boolean`));
         return errors;
       }
+      errors.push(...validateConst(value, field, path));
+      if (errors.length > 0) return errors;
       errors.push(...validateAllowedEnum(value, field, path));
+      if (errors.length === 0) {
+        errors.push(...runCustomValidate(value, field, path));
+      }
       return errors;
     }
     case 'array': {
@@ -373,6 +520,9 @@ function validateTypeAndNested(
       }
       errors.push(...validateArrayBounds(value, field, path));
       errors.push(...validateArrayItems(value, field, path));
+      if (errors.length === 0) {
+        errors.push(...runCustomValidate(value, field, path));
+      }
       return errors;
     }
     case 'object': {
@@ -384,6 +534,9 @@ function validateTypeAndNested(
       }
       if (field.properties && Object.keys(field.properties).length > 0) {
         errors.push(...validateRecord(value, field.properties, path));
+      }
+      if (errors.length === 0) {
+        errors.push(...runCustomValidate(value, field, path));
       }
       return errors;
     }
@@ -482,7 +635,7 @@ export function validate(data: Record<string, unknown>, schema: Schema): Validat
  */
 export function validateRootArray(
   data: unknown[],
-  field: FieldSchema & { type: 'array' },
+  field: ArrayRootFieldSchema,
 ): ValidationError[] {
   if (!Array.isArray(data)) {
     throw new TypeError('[llm-schema-validator] validateRootArray: data must be an array');
@@ -490,5 +643,8 @@ export function validateRootArray(
   const errors: ValidationError[] = [];
   errors.push(...validateArrayBounds(data, field, '(root)'));
   errors.push(...validateArrayItems(data, field, '(root)'));
+  if (errors.length === 0) {
+    errors.push(...runCustomValidate(data, field, '(root)'));
+  }
   return errors;
 }

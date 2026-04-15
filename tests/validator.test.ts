@@ -123,6 +123,31 @@ describe('validate', () => {
     expect(errs.some((e) => e.field === 'items[0].id')).toBe(true);
   });
 
+  it('validates const literal string', () => {
+    const schema = {
+      kind: { type: 'string' as const, required: true, const: 'invoice' as const },
+    };
+    expect(validate({ kind: 'invoice' }, schema)).toEqual([]);
+    const errs = validate({ kind: 'receipt' }, schema);
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs[0].message).toMatch(/exactly/);
+  });
+
+  it('validates const number and boolean', () => {
+    expect(
+      validate({ n: 42 }, { n: { type: 'number' as const, required: true, const: 42 } }),
+    ).toEqual([]);
+    expect(
+      validate({ n: 41 }, { n: { type: 'number' as const, required: true, const: 42 } }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      validate({ ok: true }, { ok: { type: 'boolean' as const, required: true, const: true } }),
+    ).toEqual([]);
+    expect(
+      validate({ ok: false }, { ok: { type: 'boolean' as const, required: true, const: true } }).length,
+    ).toBeGreaterThan(0);
+  });
+
   it('validates string enum', () => {
     const schema = {
       status: {
@@ -203,5 +228,90 @@ describe('validate', () => {
     };
     expect(validateRootArray([], field).length).toBeGreaterThan(0);
     expect(validateRootArray(['a'], field)).toEqual([]);
+  });
+
+  it('validates anyOf string | number', () => {
+    const schema = {
+      id: {
+        required: true,
+        anyOf: [{ type: 'string' as const }, { type: 'number' as const }],
+      },
+    };
+    expect(validate({ id: 'x' }, schema)).toEqual([]);
+    expect(validate({ id: 1 }, schema)).toEqual([]);
+    expect(validate({ id: true }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('validates anyOf with per-branch constraints', () => {
+    const schema = {
+      id: {
+        required: true,
+        anyOf: [
+          { type: 'string' as const, minLength: 2 },
+          { type: 'number' as const, integer: true },
+        ],
+      },
+    };
+    expect(validate({ id: 'ab' }, schema)).toEqual([]);
+    expect(validate({ id: 3 }, schema)).toEqual([]);
+    expect(validate({ id: 'a' }, schema).length).toBeGreaterThan(0);
+    expect(validate({ id: 3.5 }, schema).length).toBeGreaterThan(0);
+  });
+
+  it('runs custom validate when built-in checks pass', () => {
+    const schema = {
+      score: {
+        type: 'number' as const,
+        required: true,
+        validate: (v: unknown) =>
+          typeof v === 'number' && v % 5 === 0 ? null : 'Must be a multiple of 5',
+      },
+    };
+    expect(validate({ score: 10 }, schema)).toEqual([]);
+    const errs = validate({ score: 7 }, schema);
+    expect(errs).toHaveLength(1);
+    expect(errs[0].field).toBe('score');
+    expect(errs[0].message).toContain('Must be a multiple of 5');
+  });
+
+  it('skips custom validate when type or built-in constraints fail', () => {
+    const schema = {
+      score: {
+        type: 'number' as const,
+        required: true,
+        minimum: 0,
+        validate: () => 'custom should not run',
+      },
+    };
+    const errs = validate({ score: -1 }, schema);
+    expect(errs.some((e) => e.message.includes('minimum'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('custom should not run'))).toBe(false);
+  });
+
+  it('reports when custom validate throws', () => {
+    const schema = {
+      x: {
+        type: 'string' as const,
+        required: true,
+        validate: () => {
+          throw new Error('boom');
+        },
+      },
+    };
+    const errs = validate({ x: 'ok' }, schema);
+    expect(errs.some((e) => e.message.includes('custom validate threw'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('boom'))).toBe(true);
+  });
+
+  it('validateRootArray runs custom validate on the root array', () => {
+    const field = {
+      type: 'array' as const,
+      required: true,
+      itemType: 'number' as const,
+      validate: (v: unknown) =>
+        Array.isArray(v) && v.length === 2 ? null : 'exactly two items',
+    };
+    expect(validateRootArray([1, 2], field)).toEqual([]);
+    expect(validateRootArray([1], field).some((e) => e.message.includes('exactly two'))).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "llm-schema-validator",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Structured LLM outputs with a TypeScript field schema: parse, coerce, validate, and retry. OpenAI, Anthropic, and custom providers.",
   "sideEffects": false,
   "type": "module",
@@ -55,7 +55,8 @@
   "funding": "https://github.com/sponsors/ashwinpaulallen",
   "peerDependencies": {
     "@anthropic-ai/sdk": ">=0.80.0",
-    "openai": ">=4.0.0"
+    "openai": ">=4.0.0",
+    "zod": "^3.23.0"
   },
   "peerDependenciesMeta": {
     "@anthropic-ai/sdk": {
@@ -63,11 +64,15 @@
     },
     "openai": {
       "optional": true
+    },
+    "zod": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
     "@eslint/js": "^10.0.1",
+    "@types/json-schema": "^7.0.15",
     "@types/node": "^25.6.0",
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",
@@ -76,6 +81,7 @@
     "ts-node": "^10.9.2",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.1",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "zod": "^3.25.76"
   }
 }

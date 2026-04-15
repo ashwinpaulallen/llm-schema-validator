@@ -44,6 +44,24 @@ describe('coerce', () => {
     expect(coerce(data, schema).s).toBe('99');
   });
 
+  it('coerces anyOf using first matching branch (order matters)', () => {
+    const schemaNumFirst = {
+      id: {
+        required: true,
+        anyOf: [{ type: 'number' as const }, { type: 'string' as const }],
+      },
+    };
+    expect(coerce({ id: '42' }, schemaNumFirst).id).toBe(42);
+
+    const schemaStrFirst = {
+      id: {
+        required: true,
+        anyOf: [{ type: 'string' as const }, { type: 'number' as const }],
+      },
+    };
+    expect(coerce({ id: '42' }, schemaStrFirst).id).toBe('42');
+  });
+
   it('parses array from JSON string', () => {
     const data = { n: 1, b: true, s: 'a', arr: '[1,2,3]', nested: { x: 0 } };
     expect(coerce(data, schema).arr).toEqual([1, 2, 3]);

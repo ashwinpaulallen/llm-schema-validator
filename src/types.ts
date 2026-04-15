@@ -1,15 +1,12 @@
 /**
- * Describes a single field. Use `properties` when `type` is `'object'` to express a nested schema.
+ * Shared metadata on every field (single `type` or {@link UnionFieldSchema#anyOf}).
  */
-export interface FieldSchema {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+export interface FieldSchemaBase {
   required: boolean;
-  format?: 'email' | 'url' | 'date';
-  default?: unknown;
   description?: string;
   /**
    * Example values included in the schema outline sent to the model (illustrative vocabulary).
-   * Not enforced by validation — use {@link FieldSchema.enum} for strict allowed values.
+   * Not enforced by validation — use {@link SimpleFieldSchema.enum} or {@link SimpleFieldSchema.const} for strict values.
    */
   examples?: readonly string[];
   /**
@@ -17,6 +14,25 @@ export interface FieldSchema {
    * When `false` or omitted, `null` is invalid for typed fields.
    */
   nullable?: boolean;
+  default?: unknown;
+  /**
+   * Optional check after a matching `anyOf` branch succeeds (or after single-type validation).
+   * Return `null` if the value is valid, or a short error message string otherwise.
+   */
+  validate?: (value: unknown) => string | null;
+}
+
+/**
+ * A single-type field. Use `properties` when `type` is `'object'` to express a nested schema.
+ */
+export interface SimpleFieldSchema extends FieldSchemaBase {
+  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  format?: 'email' | 'url' | 'date';
+  /**
+   * Exact value (after coercion), like JSON Schema `const` — useful for discriminators, e.g.
+   * `{ type: 'string', const: 'invoice' }`.
+   */
+  const?: string | number | boolean | null;
   /**
    * Allowed values for `string` or `number` fields (exact match after coercion).
    * @example { enum: ['active', 'inactive', 'pending'] }
@@ -48,6 +64,27 @@ export interface FieldSchema {
   /** When `itemType` is `'object'`, optional schema for each array element. */
   itemProperties?: Schema;
 }
+
+/**
+ * Field that matches one of several alternative shapes (JSON Schema `anyOf`-style).
+ * Branches are tried **in order** during coercion; validation succeeds if **any** branch fully matches.
+ */
+export interface UnionFieldSchema extends FieldSchemaBase {
+  anyOf: readonly AnyOfBranchSchema[];
+}
+
+/**
+ * One alternative inside {@link UnionFieldSchema#anyOf}. Inherits `required` / `nullable` / `default` / parent `validate` from the enclosing field only (do not set `required` here).
+ */
+export type AnyOfBranchSchema = Omit<SimpleFieldSchema, keyof FieldSchemaBase> & {
+  type: SimpleFieldSchema['type'];
+};
+
+/** A schema field: either a single `type` or an `anyOf` union of branches. */
+export type FieldSchema = SimpleFieldSchema | UnionFieldSchema;
+
+/** Root array queries use a single `type: 'array'` field (not `anyOf`). */
+export type ArrayRootFieldSchema = SimpleFieldSchema & { type: 'array' };
 
 /**
  * A flat map of field names to {@link FieldSchema}, with nesting expressed via
@@ -133,20 +170,31 @@ export type QueryObjectOptions<S extends Schema = Schema> = QueryOptionsBase & {
   /** @default 'object' when omitted */
   rootType?: 'object';
   schema: S;
+  /**
+   * After per-field validation passes on the coerced object, run cross-field or dependent rules
+   * (e.g. `endDate > startDate`, or required `subtype` when `type === 'x'`).
+   * Return `null` if valid, or a short error message (shown in retries).
+   */
+  validate?: (data: Record<string, unknown>) => string | null;
 };
 
 /**
  * Root JSON is a **JSON array** (e.g. a list of items). Use `arraySchema` with `type: 'array'`.
  */
-export type QueryArrayOptions<F extends FieldSchema & { type: 'array' }> = QueryOptionsBase & {
+export type QueryArrayOptions<F extends ArrayRootFieldSchema = ArrayRootFieldSchema> = QueryOptionsBase & {
   rootType: 'array';
   arraySchema: F;
+  /**
+   * After per-item validation passes on the coerced root array, run whole-array rules.
+   * Return `null` if valid, or a short error message (shown in retries).
+   */
+  validate?: (data: unknown[]) => string | null;
 };
 
 /** Options for a schema-guided LLM query: either an object root or an array root. */
 export type QueryOptions<S extends Schema = Schema> =
   | QueryObjectOptions<S>
-  | QueryArrayOptions<FieldSchema & { type: 'array' }>;
+  | QueryArrayOptions<ArrayRootFieldSchema>;
 
 /** Result of validating and parsing an LLM response against a schema. */
 export interface QueryResult<T> {

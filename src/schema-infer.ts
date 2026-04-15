@@ -1,4 +1,4 @@
-import type { FieldSchema, Schema } from './types.js';
+import type { AnyOfBranchSchema, FieldSchema, Schema, SimpleFieldSchema, UnionFieldSchema } from './types.js';
 
 /**
  * Infer a TypeScript shape from a {@link Schema} definition (best-effort; not a full JSON Schema mapping).
@@ -17,21 +17,33 @@ export type InferKeyWithOptionality<F extends FieldSchema> = F['required'] exten
     ? InferFieldValue<F> | null | undefined
     : InferFieldValue<F> | undefined;
 
-/** Infer the value type for a single {@link FieldSchema} (excluding null / undefined; see {@link InferKeyWithOptionality}). */
-export type InferFieldValue<F extends FieldSchema> = F['type'] extends 'string'
-  ? F['enum'] extends readonly (infer E)[]
-    ? E extends string
-      ? E
-      : string
-    : string
-  : F['type'] extends 'number'
+/** Infer the value type for a single-type {@link SimpleFieldSchema} (excluding null / undefined; see {@link InferKeyWithOptionality}). */
+export type InferSimpleFieldValue<F extends SimpleFieldSchema> = F['type'] extends 'string'
+  ? undefined extends F['const']
     ? F['enum'] extends readonly (infer E)[]
-      ? E extends number
+      ? E extends string
         ? E
+        : string
+      : string
+    : F['const'] extends string
+      ? F['const']
+      : string
+  : F['type'] extends 'number'
+    ? undefined extends F['const']
+      ? F['enum'] extends readonly (infer E)[]
+        ? E extends number
+          ? E
+          : number
         : number
-      : number
+      : F['const'] extends number
+        ? F['const']
+        : number
     : F['type'] extends 'boolean'
-      ? boolean
+      ? undefined extends F['const']
+        ? boolean
+        : F['const'] extends boolean
+          ? F['const']
+          : boolean
       : F['type'] extends 'object'
         ? F['properties'] extends Schema
           ? InferSchema<F['properties']>
@@ -40,7 +52,18 @@ export type InferFieldValue<F extends FieldSchema> = F['type'] extends 'string'
           ? InferArrayElement<F>[]
           : unknown;
 
-type InferArrayElement<F extends FieldSchema> = F['itemType'] extends 'object'
+type InferAnyOfUnion<A extends readonly AnyOfBranchSchema[]> = A[number] extends infer B
+  ? B extends AnyOfBranchSchema
+    ? InferSimpleFieldValue<SimpleFieldSchema & B>
+    : never
+  : never;
+
+/** Infer the value type for a {@link FieldSchema} (excluding null / undefined; see {@link InferKeyWithOptionality}). */
+export type InferFieldValue<F extends FieldSchema> = F extends UnionFieldSchema
+  ? InferAnyOfUnion<F['anyOf']>
+  : InferSimpleFieldValue<Extract<F, SimpleFieldSchema>>;
+
+type InferArrayElement<F extends SimpleFieldSchema> = F['itemType'] extends 'object'
   ? F['itemProperties'] extends Schema
     ? InferSchema<F['itemProperties']>
     : Record<string, unknown>
