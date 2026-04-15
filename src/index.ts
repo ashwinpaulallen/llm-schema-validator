@@ -22,6 +22,8 @@ export { validate, validateRootArray } from './validator.js';
 /**
  * Run a schema-guided LLM request: prompt → parse → coerce → validate, with retries.
  * **`QueryResult.usage`** sums token counts from the provider when available (see **`CompletionUsage`**).
+ * **`QueryResult.durationMs`** is total wall-clock time for the call (attempts, parsing, and inter-attempt backoff); **`onAttempt`** always receives **`meta.durationMs`** per attempt (**`meta`** is optional in the callback type for two-parameter handlers).
+ * **`onComplete`** runs once at the end with **`QueryCompletionSummary`** (success or failure, including **`QueryRetriesExhaustedError`** and **`ProviderError`**) for metrics without wrapping every call in try/catch.
  * For an object root, `data` is inferred from `schema` when you use {@link defineSchema} (see {@link InferSchema}).
  * For {@link QueryArrayOptions}, `data` is inferred from `arraySchema` (see {@link InferFieldValue}).
  * Use **`validate`** on options for cross-field rules after per-field validation (object or array root).

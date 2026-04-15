@@ -163,6 +163,30 @@ export interface FewShotExample {
   output: unknown;
 }
 
+/** Per-attempt metadata passed to {@link QueryOptionsBase.onAttempt}. */
+export interface QueryAttemptMeta {
+  /** Wall-clock milliseconds for this attempt (after any backoff before this attempt, until `onAttempt` runs). */
+  durationMs: number;
+}
+
+/**
+ * Summary passed to {@link QueryOptionsBase.onComplete} — mirrors {@link QueryResult} fields except **`data`**.
+ */
+export interface QueryCompletionSummary {
+  success: boolean;
+  attempts: number;
+  /**
+   * Total wall-clock time for this `query` in milliseconds (same as {@link QueryResult#durationMs}).
+   */
+  durationMs: number;
+  /** Human-readable failure messages; empty when **`success`** is **`true`**. */
+  errors: readonly string[];
+  /**
+   * Aggregated token usage when reported (same as {@link QueryResult#usage}).
+   */
+  usage?: CompletionUsage;
+}
+
 /** Shared options for {@link query} (both object-root and array-root). */
 export interface QueryOptionsBase {
   prompt: string;
@@ -208,8 +232,14 @@ export interface QueryOptionsBase {
   /**
    * Called after each **`provider.complete()`** finishes: **`attempt`** is 1-based; **`errors`** is empty on success,
    * otherwise human-readable messages for that attempt only (no `Attempt N:` prefix — use **`attempt`** for indexing).
+   * **`meta`** is optional in the type so **`(attempt, errors) => …`** handlers stay assignable; the library **always** passes **`meta`** with **`durationMs`** (wall-clock for that attempt after any inter-attempt backoff, until this callback).
    */
-  onAttempt?: (attempt: number, errors: string[]) => void;
+  onAttempt?: (attempt: number, errors: string[], meta?: QueryAttemptMeta) => void;
+  /**
+   * Called once when the `query` finishes: **success**, **validation exhausted**, or **provider failure**
+   * (same shape as assembling from {@link QueryResult}, without `data`). Use for metrics without wrapping every call in try/catch.
+   */
+  onComplete?: (summary: QueryCompletionSummary) => void;
   /**
    * Abort the current attempt (and any in-flight provider request that respects `signal`).
    * Applies to each `provider.complete()` call; a new attempt uses the same outer signal state.
@@ -300,6 +330,10 @@ export interface QueryResult<T> {
   success: boolean;
   attempts: number;
   errors: string[];
+  /**
+   * Total wall-clock time for this `query` in milliseconds (setup, all `complete()` calls, parsing/validation, and inter-attempt backoff).
+   */
+  durationMs: number;
   /**
    * Aggregated token counts across **all** `complete()` calls for this `query` (including failed attempts),
    * when the provider reported usage. Omitted if no attempt returned usage data.

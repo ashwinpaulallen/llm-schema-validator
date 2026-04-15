@@ -173,6 +173,26 @@ describe('executeWithRetry', () => {
     expect(provider.complete).toHaveBeenCalledTimes(2);
   });
 
+  it('does not break retries when onAttempt throws on validation failure', async () => {
+    let n = 0;
+    const onAttempt = () => {
+      n += 1;
+      if (n === 1) throw new Error('metrics sink');
+    };
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"answer": "not a number"}')
+        .mockResolvedValueOnce('{"answer": 1}'),
+    };
+    const result = await executeWithRetry(
+      opts({ provider, maxRetries: 3, coerce: false, onAttempt }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+  });
+
   it('throws after exhausting attempts', async () => {
     const provider = {
       complete: vi.fn().mockResolvedValue('{"answer": "bad"}'),
@@ -395,6 +415,15 @@ describe('executeWithRetry', () => {
     expect(backoffCalls.length).toBe(2);
   });
 
+  it('allows onAttempt typed with only attempt and errors (meta optional)', async () => {
+    const onAttempt = (attempt: number, errors: string[]) => {
+      expect(attempt).toBe(1);
+      expect(errors).toEqual([]);
+    };
+    const provider = { complete: vi.fn().mockResolvedValue('{"answer": 1}') };
+    await executeWithRetry(opts({ provider, onAttempt }));
+  });
+
   it('calls onAttempt with empty errors on success', async () => {
     const onAttempt = vi.fn();
     const provider = {
@@ -402,7 +431,11 @@ describe('executeWithRetry', () => {
     };
     await executeWithRetry(opts({ provider, onAttempt }));
     expect(onAttempt).toHaveBeenCalledTimes(1);
-    expect(onAttempt).toHaveBeenCalledWith(1, []);
+    expect(onAttempt).toHaveBeenCalledWith(
+      1,
+      [],
+      expect.objectContaining({ durationMs: expect.any(Number) }),
+    );
   });
 
   it('calls onAttempt per attempt with validation errors then empty on success', async () => {
@@ -418,8 +451,13 @@ describe('executeWithRetry', () => {
     expect(onAttempt.mock.calls[0]).toEqual([
       1,
       [expect.stringContaining('field "answer"')],
+      expect.objectContaining({ durationMs: expect.any(Number) }),
     ]);
-    expect(onAttempt.mock.calls[1]).toEqual([2, []]);
+    expect(onAttempt.mock.calls[1]).toEqual([
+      2,
+      [],
+      expect.objectContaining({ durationMs: expect.any(Number) }),
+    ]);
   });
 
   it('calls onAttempt before throwing on provider failure', async () => {
@@ -430,7 +468,127 @@ describe('executeWithRetry', () => {
     await expect(executeWithRetry(opts({ provider, maxRetries: 1, onAttempt }))).rejects.toThrow(
       ProviderError,
     );
-    expect(onAttempt).toHaveBeenCalledWith(1, [expect.stringContaining('network')]);
+    expect(onAttempt).toHaveBeenCalledWith(
+      1,
+      [expect.stringContaining('network')],
+      expect.objectContaining({ durationMs: expect.any(Number) }),
+    );
+  });
+
+  it('calls onComplete with summary aligned with QueryResult on success', async () => {
+    const onComplete = vi.fn();
+    const provider = { complete: vi.fn().mockResolvedValue('{"answer": 42}') };
+    const result = await executeWithRetry(opts({ provider, onComplete }));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    const summary = onComplete.mock.calls[0]![0];
+    expect(summary.success).toBe(result.success);
+    expect(summary.attempts).toBe(result.attempts);
+    expect(summary.durationMs).toBe(result.durationMs);
+    expect([...summary.errors]).toEqual(result.errors);
+    expect(summary.usage).toEqual(result.usage);
+  });
+
+  it('calls onComplete before QueryRetriesExhaustedError', async () => {
+    const onComplete = vi.fn();
+    const provider = { complete: vi.fn().mockResolvedValue('{"answer": "bad"}') };
+    let exhausted: QueryRetriesExhaustedError | undefined;
+    try {
+      await executeWithRetry(opts({ provider, maxRetries: 1, coerce: false, onComplete }));
+    } catch (e) {
+      exhausted = e as QueryRetriesExhaustedError;
+    }
+    expect(exhausted).toBeInstanceOf(QueryRetriesExhaustedError);
+    expect(typeof exhausted!.durationMs).toBe('number');
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    const summary = onComplete.mock.calls[0]![0];
+    expect(summary.success).toBe(false);
+    expect(summary.attempts).toBe(1);
+    expect(summary.errors.length).toBeGreaterThan(0);
+    expect(typeof summary.durationMs).toBe('number');
+    expect(exhausted!.durationMs).toBe(summary.durationMs);
+  });
+
+  it('calls onComplete before ProviderError', async () => {
+    const onComplete = vi.fn();
+    const provider = { complete: vi.fn().mockRejectedValue(new Error('network')) };
+    await expect(executeWithRetry(opts({ provider, onComplete }))).rejects.toThrow(ProviderError);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    const summary = onComplete.mock.calls[0]![0];
+    expect(summary.success).toBe(false);
+    expect(summary.attempts).toBe(1);
+    expect(summary.errors.some((e) => e.includes('network'))).toBe(true);
+  });
+
+  it('still surfaces ProviderError when onComplete throws', async () => {
+    const onComplete = () => {
+      throw new Error('metrics');
+    };
+    const provider = { complete: vi.fn().mockRejectedValue(new Error('network')) };
+    await expect(executeWithRetry(opts({ provider, onComplete }))).rejects.toThrow(ProviderError);
+  });
+
+  it('still surfaces QueryRetriesExhaustedError when onComplete throws', async () => {
+    const onComplete = () => {
+      throw new Error('metrics');
+    };
+    const provider = { complete: vi.fn().mockResolvedValue('{"answer": "bad"}') };
+    await expect(
+      executeWithRetry(opts({ provider, maxRetries: 1, coerce: false, onComplete })),
+    ).rejects.toThrow(QueryRetriesExhaustedError);
+  });
+
+  it('calls onComplete when signal aborts during retry backoff', async () => {
+    const onComplete = vi.fn();
+    const controller = new AbortController();
+    const provider = vi
+      .fn()
+      .mockResolvedValueOnce('{"answer": "bad"}')
+      .mockResolvedValueOnce('{"answer": 1}');
+
+    const p = executeWithRetry(
+      opts({
+        provider,
+        maxRetries: 3,
+        coerce: false,
+        retryDelayMs: 60_000,
+        signal: controller.signal,
+        onComplete,
+      }),
+    );
+
+    queueMicrotask(() => controller.abort());
+
+    await expect(p).rejects.toThrow();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    const summary = onComplete.mock.calls[0]![0];
+    expect(summary.success).toBe(false);
+    expect(summary.attempts).toBe(1);
+    expect(summary.errors.length).toBeGreaterThan(0);
+  });
+
+  it('sets durationMs on QueryResult and per-attempt meta.durationMs', async () => {
+    const onAttempt = vi.fn();
+    const provider = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce('{"answer": "bad"}')
+        .mockResolvedValueOnce('{"answer": 1}'),
+    };
+    const result = await executeWithRetry(
+      opts({ provider, maxRetries: 3, coerce: false, onAttempt, retryDelayMs: 40 }),
+    );
+    expect(result.success).toBe(true);
+    expect(typeof result.durationMs).toBe('number');
+    expect(result.durationMs).toBeGreaterThanOrEqual(40);
+    expect(onAttempt.mock.calls[0]![2]).toEqual(
+      expect.objectContaining({ durationMs: expect.any(Number) }),
+    );
+    expect(onAttempt.mock.calls[1]![2]).toEqual(
+      expect.objectContaining({ durationMs: expect.any(Number) }),
+    );
+    const a0 = onAttempt.mock.calls[0]![2] as { durationMs: number };
+    const a1 = onAttempt.mock.calls[1]![2] as { durationMs: number };
+    expect(a0.durationMs + a1.durationMs).toBeLessThanOrEqual(result.durationMs);
   });
 
   it('retries when query-level validate fails then succeeds', async () => {

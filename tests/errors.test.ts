@@ -27,18 +27,25 @@ describe('custom errors', () => {
   });
 
   it('QueryRetriesExhaustedError exposes structured fields', () => {
-    const err = new QueryRetriesExhaustedError(2, ['a', 'b'], 'snippet');
+    const err = new QueryRetriesExhaustedError(2, ['a', 'b'], 'snippet', 0);
     expect(err.attempts).toBe(2);
     expect(err.collectedErrors).toEqual(['a', 'b']);
     expect(err.lastRawSnippet).toBe('snippet');
     expect(err.usage).toBeUndefined();
+    expect(err.durationMs).toBe(0);
     expect(err.message).toMatch(/query:/);
     expect(err.message).toMatch(/Failed after 2 attempt/);
   });
 
   it('QueryRetriesExhaustedError may carry aggregated usage', () => {
     const usage = { promptTokens: 5, completionTokens: 2, totalTokens: 7 };
-    const err = new QueryRetriesExhaustedError(1, ['e'], 's', usage);
+    const err = new QueryRetriesExhaustedError(1, ['e'], 's', 0, usage);
     expect(err.usage).toEqual(usage);
+    expect(err.durationMs).toBe(0);
+  });
+
+  it('QueryRetriesExhaustedError carries durationMs', () => {
+    const err = new QueryRetriesExhaustedError(2, ['x'], 'raw', 42);
+    expect(err.durationMs).toBe(42);
   });
 });

@@ -34,7 +34,7 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **`query()`** — End-to-end flow: prompt → model → parse → coerce → validate → retry.
 - **`defineSchema()`** — Typed helper so schema objects stay autocomplete-friendly.
 - **Adapters** — **`fromZod(z.object(…))`** and **`fromJsonSchema({ type: 'object', … })`** to reuse Zod or JSON Schema (draft-07) definitions as a **`Schema`**.
-- **Built-in providers** — `createOpenAIProvider` (Chat Completions), `createAnthropicProvider` (Messages API), `createCustomProvider`; **`QueryResult.usage`** aggregates **prompt / completion / total tokens** when the provider reports them (OpenAI & Anthropic SDKs).
+- **Built-in providers** — `createOpenAIProvider` (Chat Completions), `createAnthropicProvider` (Messages API), `createCustomProvider`; **`QueryResult.usage`** aggregates **prompt / completion / total tokens** when the provider reports them (OpenAI & Anthropic SDKs); **`QueryResult.durationMs`** reports total wall-clock latency.
 - **Object or array root** — Default top-level JSON object, or **`rootType: 'array'`** with **`arraySchema`** for a list-shaped response.
 - **`anyOf` unions** — A field can list multiple alternatives (`string` **or** `number`, etc.); coercion tries branches **in order**.
 - **`const` literals** — Exact value match per field (discriminated unions, fixed `kind` strings).
@@ -46,7 +46,8 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`); optional field **`examples`** for prompt hints (separate from strict **`enum`**).
 - **Retries** — Configurable **`maxRetries`**, optional **exponential backoff** via **`retryDelayMs`** / **`retryBackoffMultiplier`**.
 - **Standalone APIs** — **`validate`**, **`coerce`**, **`validateRootArray`**, **`coerceRootArray`** for JSON you already parsed elsewhere.
-- **`onAttempt`** — Callback with attempt index and per-attempt error strings for metrics or custom logging.
+- **`onAttempt`** — Callback with attempt index, per-attempt error strings, and **`meta.durationMs`**; **`QueryResult.durationMs`** is total wall-clock time for the whole call.
+- **`onComplete`** — Once at end with **`QueryCompletionSummary`** (`success`, `attempts`, `durationMs`, `errors`, `usage`) on success, **`fallbackToPartial`**, **`QueryRetriesExhaustedError`**, or **`ProviderError`** (metrics without wrapping every call in try/catch).
 - **Diagnostics** — **`logLevel`** (`'silent'` … `'debug'`) or inject a **`logger`** with optional **`log(level, …)`** (avoid logging secrets in production).
 - **Dual module format** — **ESM** and **CommonJS** builds (`import` / `require`).
 
@@ -148,7 +149,7 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 | `fromJsonSchema`, `JsonSchemaAdapterError` | Convert a **JSON Schema draft-07** object schema to a **`Schema`** (same-document **`$ref`** to `#/definitions` / `#/$defs` supported). |
 | `createOpenAIProvider`, `OpenAIProviderOptions`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createCustomProvider` | Ready-made `LLMProvider` implementations and their factory option types. |
 | `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
-| `LLMProvider`, `CompleteOptions`, `LLMProviderCompleteResult`, `LLMCompletion`, `CompletionUsage`, `Schema`, `FieldSchema`, `FewShotExample`, `PromptTemplateContext`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
+| `LLMProvider`, `CompleteOptions`, `LLMProviderCompleteResult`, `LLMCompletion`, `CompletionUsage`, `Schema`, `FieldSchema`, `FewShotExample`, `PromptTemplateContext`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryCompletionSummary`, `QueryAttemptMeta`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
 | `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError`, `ZodAdapterError`, `JsonSchemaAdapterError` | Error classes (see [Errors](#errors-and-exceptions)). |
 
 **ESM and CommonJS** — The build emits **ESM** under `dist/` (`import` / `"module"`) and **CommonJS** under `dist/cjs/` (`require` / `"main"`). The package root sets `"type": "module"`; `dist/cjs/package.json` sets `"type": "commonjs"` so Node resolves `require('llm-schema-validator')` to the CJS build. Use `import` from the same package name in ESM projects.
@@ -197,7 +198,8 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 | `logLevel` | `QueryLogLevel?` | **Default:** `silent` unless `debug: true`, a **`logger`** is set, or you set this explicitly. **`error` ≤ `warn` ≤ `info` ≤ `debug`** — e.g. **`info`** logs attempts and outcomes, not raw model text (**`debug`**). Takes precedence over **`debug`**. |
 | `debug` | `boolean?` | **Deprecated.** Prefer **`logLevel: 'debug'`**. When `true` and `logLevel` is omitted, diagnostics use full **`debug`** verbosity. |
 | `logger` | `QueryLogger?` | Prefer **`logger.log(level, message, …args)`** for level-aware routing; otherwise **`logger.debug(message, …)`** receives all emitted lines. If omitted, messages go to **`console.error` / `warn` / `info` / `debug`** by level. |
-| `onAttempt` | `(attempt: number, errors: string[]) => void?` | After each finished **`complete()`**: **`attempt`** is 1-based; **`errors`** is empty on success, otherwise messages for that attempt only (for metrics / custom logging). |
+| `onAttempt` | `(attempt, errors, meta?) => void?` | After each finished **`complete()`** for that attempt: **`attempt`** is 1-based; **`errors`** is empty on success. **`meta.durationMs`** (optional in the type, always passed at runtime) is per-attempt wall-clock time after any backoff before that attempt. |
+| `onComplete` | `(summary: QueryCompletionSummary) => void?` | Once when the query **terminates**: same fields as **`QueryResult`** except **`data`** — **`success`**, **`attempts`**, **`durationMs`**, **`errors`**, **`usage`**. Runs on success, **`fallbackToPartial`**, **`QueryRetriesExhaustedError`**, and **`ProviderError`**. |
 | `signal` | `AbortSignal?` | Passed to each `provider.complete()` (and merged with `providerTimeoutMs`). Aborting ends the current attempt with an error (same as a failed provider call). |
 | `providerTimeoutMs` | `number?` | **Default: none.** Maximum time in milliseconds for **each** `complete()` call. Prevents hung LLM requests from blocking forever; uses `AbortSignal` and races the promise so `query` returns even if a custom provider ignores cancellation. |
 | `validate` | `(data) => string \| null?` | **Cross-field validation** after per-field checks on the **coerced** root: object root → `Record<string, unknown>`; array root → `unknown[]`. Return **`null`** if OK, or an error message string. |
@@ -213,6 +215,7 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 | `success` | `boolean` | `true` if validation passed on some attempt. |
 | `attempts` | `number` | How many `complete` calls were made. |
 | `errors` | `string[]` | Human-readable messages for failed attempts; empty when `success` is `true`. |
+| `durationMs` | `number` | Total wall-clock time for this `query` (setup, every attempt, parsing/validation, and inter-attempt backoff). |
 | `usage` | `CompletionUsage?` | **Aggregated** `promptTokens`, `completionTokens`, `totalTokens` across every `complete()` in this `query` (including retries), when reported. Omitted if no attempt returned usage. |
 
 ### `FieldSchema`
@@ -250,7 +253,7 @@ By default the root value must be a **plain object** (not a bare array or primit
 | Error | When |
 |--------|------|
 | `ProviderError` | `provider.complete()` throws (network, SDK, HTTP). **Not** retried — the error propagates immediately. |
-| `QueryRetriesExhaustedError` | All attempts failed validation (or could not yield a valid root object/array), `fallbackToPartial` is `false` or there was nothing to return. Carries `attempts`, `collectedErrors`, `lastRawSnippet`, and optional **`usage`** (same aggregation as `QueryResult`). |
+| `QueryRetriesExhaustedError` | All attempts failed validation (or could not yield a valid root object/array), `fallbackToPartial` is `false` or there was nothing to return. Carries `attempts`, `collectedErrors`, `lastRawSnippet`, **`durationMs`**, and optional **`usage`**. Prefer **`catch`** and read these fields — constructing **`new QueryRetriesExhaustedError(...)`** yourself is only for tests/tooling; the constructor is not treated as a stable app-facing API (see JSDoc). |
 | `JSONExtractionError` | Used internally when parsing JSON from text; during `query()`, failed extractions trigger **retries** instead of surfacing this class directly. |
 | `ZodAdapterError` | `fromZod()` cannot represent a Zod construct (unsupported feature). |
 | `JsonSchemaAdapterError` | `fromJsonSchema()` cannot represent a JSON Schema fragment (unsupported keyword or shape). |
