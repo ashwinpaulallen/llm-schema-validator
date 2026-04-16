@@ -43,10 +43,41 @@ function getFieldType(field: FieldSchema): string {
   return (field as SimpleFieldSchema).type;
 }
 
+/**
+ * Deep equality for schema field objects: object key order is ignored at every level;
+ * array element order is preserved (e.g. `anyOf` branch order matters).
+ */
+function deepEqualFieldSchema(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
+    return false;
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const aa = a as unknown[];
+    const bb = b as unknown[];
+    if (aa.length !== bb.length) return false;
+    for (let i = 0; i < aa.length; i++) {
+      if (!deepEqualFieldSchema(aa[i], bb[i])) return false;
+    }
+    return true;
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const aKeys = Object.keys(ao).sort();
+  const bKeys = Object.keys(bo).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  for (let i = 0; i < aKeys.length; i++) {
+    if (aKeys[i] !== bKeys[i]) return false;
+  }
+  for (const k of aKeys) {
+    if (!deepEqualFieldSchema(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
 function fieldsAreEqual(a: FieldSchema, b: FieldSchema): boolean {
-  const aJson = JSON.stringify(a, Object.keys(a).sort());
-  const bJson = JSON.stringify(b, Object.keys(b).sort());
-  return aJson === bJson;
+  return deepEqualFieldSchema(a, b);
 }
 
 function describeFieldChange(path: string, oldField: FieldSchema, newField: FieldSchema): string {

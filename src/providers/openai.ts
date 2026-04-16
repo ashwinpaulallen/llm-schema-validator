@@ -199,12 +199,15 @@ export function createOpenAIProvider(
   const enableStreaming = requestOptions?.stream === true;
   const skipValidation = usesStructuredOutputs && requestOptions?.structuredOutputs?.skipValidation === true;
 
-  async function ensureClient(): Promise<InstanceType<OpenAIModule['default']>> {
+  async function ensureClientAndModule(): Promise<{
+    client: InstanceType<OpenAIModule['default']>;
+    openai: OpenAIModule;
+  }> {
     const openai = await loadOpenAIModule();
     if (!client) {
       client = new openai.default({ apiKey });
     }
-    return client;
+    return { client, openai };
   }
 
   const baseProvider: LLMProvider = {
@@ -213,8 +216,7 @@ export function createOpenAIProvider(
     __usesStructuredOutputs: usesStructuredOutputs,
     __skipValidation: skipValidation,
     async complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult> {
-      const c = await ensureClient();
-      const openai = await loadOpenAIModule();
+      const { client: c, openai } = await ensureClientAndModule();
       try {
         const messages = buildOpenAIMessages(prompt, init);
         const body = buildOpenAIBody(model, messages, requestOptions, false);
@@ -265,8 +267,7 @@ export function createOpenAIProvider(
     ...baseProvider,
     supportsStreaming: true as const,
     async *stream(prompt: string, init?: CompleteOptions): AsyncIterable<StreamChunk> {
-      const c = await ensureClient();
-      const openai = await loadOpenAIModule();
+      const { client: c, openai } = await ensureClientAndModule();
       try {
         const messages = buildOpenAIMessages(prompt, init);
         const body = buildOpenAIBody(model, messages, requestOptions, true);
@@ -281,6 +282,7 @@ export function createOpenAIProvider(
           };
         }>;
 
+        let lastStreamUsage: LLMCompletion['usage'] | undefined;
         for await (const chunk of streamResponse) {
           const delta = chunk.choices?.[0]?.delta?.content;
           if (typeof delta === 'string') {
@@ -288,17 +290,14 @@ export function createOpenAIProvider(
           }
           if (chunk.usage) {
             const u = chunk.usage;
-            yield {
-              text: '',
-              done: true,
-              usage: {
-                promptTokens: u.prompt_tokens,
-                completionTokens: u.completion_tokens,
-                totalTokens: u.total_tokens,
-              },
+            lastStreamUsage = {
+              promptTokens: u.prompt_tokens,
+              completionTokens: u.completion_tokens,
+              totalTokens: u.total_tokens,
             };
           }
         }
+        yield { text: '', done: true, usage: lastStreamUsage };
       } catch (error) {
         if (error instanceof openai.APIError) {
           throw new ProviderError(

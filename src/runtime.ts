@@ -19,6 +19,13 @@ export type RuntimeEnvironment =
 
 /**
  * Detect the current JavaScript runtime environment.
+ *
+ * @remarks
+ * **Cloudflare Workers vs browser Service Workers:** Both may expose `caches` and omit `window`/`document`.
+ * We treat the environment as **`cloudflare-workers`** only when this does not look like a browser
+ * Service Worker global (`globalThis instanceof ServiceWorkerGlobalScope` when that constructor exists).
+ * If it matches, we do not label the runtime as Cloudflare (falls through, often to **`unknown`**).
+ * Environments that mimic Workers but are neither are still ambiguous — do not rely on this value for security.
  */
 export function detectRuntime(): RuntimeEnvironment {
   if (typeof globalThis !== 'undefined') {
@@ -28,9 +35,25 @@ export function detectRuntime(): RuntimeEnvironment {
     if (typeof (globalThis as Record<string, unknown>).Bun !== 'undefined') {
       return 'bun';
     }
-    if (typeof (globalThis as Record<string, unknown>).caches !== 'undefined' &&
-        typeof (globalThis as Record<string, unknown>).navigator === 'undefined') {
-      return 'cloudflare-workers';
+    const g = globalThis as typeof globalThis & {
+      caches?: unknown;
+      navigator?: unknown;
+      ServiceWorkerGlobalScope?: abstract new () => object;
+    };
+    if (typeof g.caches !== 'undefined' && typeof g.navigator === 'undefined') {
+      const SW = g.ServiceWorkerGlobalScope;
+      const looksLikeBrowserServiceWorker =
+        typeof SW === 'function' &&
+        (() => {
+          try {
+            return globalThis instanceof SW;
+          } catch {
+            return false;
+          }
+        })();
+      if (!looksLikeBrowserServiceWorker) {
+        return 'cloudflare-workers';
+      }
     }
   }
 

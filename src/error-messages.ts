@@ -9,7 +9,7 @@ export const defaultErrorMessages: Required<ErrorMessageTemplates> = {
   required: (field) => `${LOG_PREFIX} Field "${field}" is required`,
   notNullable: (field) => `${LOG_PREFIX} Field "${field}" cannot be null`,
   typeMismatch: (field, expected, _received) =>
-    `${LOG_PREFIX} Field "${field}" must be ${expected.startsWith('a') || expected.startsWith('e') || expected.startsWith('i') || expected.startsWith('o') || expected.startsWith('u') ? 'an' : 'a'} ${expected}`,
+    `${LOG_PREFIX} Field "${field}" must match: ${expected}`,
   patternMismatch: (field, _pattern) =>
     `${LOG_PREFIX} Field "${field}" does not match the required pattern`,
   minLength: (field, minLength, _actualLength) =>
@@ -53,30 +53,12 @@ export function mergeErrorTemplates(
 }
 
 /**
- * Create a scoped error message generator from templates.
+ * Merge custom templates with defaults (same as {@link mergeErrorTemplates}).
  */
-export function createErrorMessageGenerator(templates?: ErrorMessageTemplates) {
-  const merged = mergeErrorTemplates(templates);
-  return {
-    required: merged.required,
-    notNullable: merged.notNullable,
-    typeMismatch: merged.typeMismatch,
-    patternMismatch: merged.patternMismatch,
-    minLength: merged.minLength,
-    maxLength: merged.maxLength,
-    minimum: merged.minimum,
-    maximum: merged.maximum,
-    multipleOf: merged.multipleOf,
-    notInteger: merged.notInteger,
-    enumMismatch: merged.enumMismatch,
-    constMismatch: merged.constMismatch,
-    minItems: merged.minItems,
-    maxItems: merged.maxItems,
-    uniqueItems: merged.uniqueItems,
-    formatMismatch: merged.formatMismatch,
-    customValidation: merged.customValidation,
-    dependentRequired: merged.dependentRequired,
-  };
+export function createErrorMessageGenerator(
+  templates?: ErrorMessageTemplates,
+): Required<ErrorMessageTemplates> {
+  return mergeErrorTemplates(templates);
 }
 
-export type ErrorMessageGenerator = ReturnType<typeof createErrorMessageGenerator>;
+export type ErrorMessageGenerator = Required<ErrorMessageTemplates>;

@@ -72,9 +72,19 @@ type GeminiResponse = {
 const DEFAULT_MODEL = 'gemini-1.5-flash';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-function buildGeminiUrl(model: string, apiKey: string, stream: boolean): string {
+function buildGeminiUrl(model: string, stream: boolean): string {
   const action = stream ? 'streamGenerateContent' : 'generateContent';
-  return `${GEMINI_API_BASE}/${model}:${action}?key=${apiKey}${stream ? '&alt=sse' : ''}`;
+  return stream
+    ? `${GEMINI_API_BASE}/${model}:${action}?alt=sse`
+    : `${GEMINI_API_BASE}/${model}:${action}`;
+}
+
+/** Prefer header auth so the key is not in URLs (logs, history, Referer). */
+function geminiRequestHeaders(apiKey: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': apiKey,
+  };
 }
 
 function extractGeminiText(response: GeminiResponse): string {
@@ -143,13 +153,13 @@ export function createGeminiProvider(
   const baseProvider: LLMProvider = {
     __providerId: 'gemini' as const,
     async complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult> {
-      const url = buildGeminiUrl(model, apiKey, false);
+      const url = buildGeminiUrl(model, false);
       const body = buildRequestBody(prompt, init);
 
       try {
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: geminiRequestHeaders(apiKey),
           body: JSON.stringify(body),
           signal: init?.signal,
         });
@@ -185,13 +195,13 @@ export function createGeminiProvider(
     ...baseProvider,
     supportsStreaming: true as const,
     async *stream(prompt: string, init?: CompleteOptions): AsyncIterable<StreamChunk> {
-      const url = buildGeminiUrl(model, apiKey, true);
+      const url = buildGeminiUrl(model, true);
       const body = buildRequestBody(prompt, init);
 
       try {
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: geminiRequestHeaders(apiKey),
           body: JSON.stringify(body),
           signal: init?.signal,
         });

@@ -373,7 +373,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     let raw: string;
-    let providerStartTime: number;
+    let providerStartTime = 0;
     try {
       const attemptSignal = combineSignals(options.signal, options.providerTimeoutMs);
       const completeInit =
@@ -407,7 +407,8 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     } catch (e) {
       if (options.onProviderEnd) {
         try {
-          const providerDurationMs = Date.now() - providerStartTime!;
+          const providerDurationMs =
+            providerStartTime === 0 ? 0 : Date.now() - providerStartTime;
           options.onProviderEnd(attempt, providerDurationMs, undefined);
         } catch {
           /* ignore hook errors */

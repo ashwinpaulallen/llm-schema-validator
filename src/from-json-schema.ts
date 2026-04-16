@@ -371,8 +371,8 @@ function convertProperty(
  * Not supported: `allOf`, `not`, `if`/`then`/`else`, tuple `items`, external `$ref`, `patternProperties`, etc.
  *
  * @remarks
- * For full TypeScript type inference on the `input` parameter, install `@types/json-schema` as a dev or
- * peer dependency: `npm install -D @types/json-schema`. Without it, the parameter type falls back to `unknown`.
+ * For full TypeScript type inference on the `input` parameter, install `@types/json-schema` as a dev
+ * dependency: `npm install -D @types/json-schema`. Without it, the parameter type falls back to `unknown`.
  */
 export function fromJsonSchema(input: JSONSchema7): Schema {
   if (!isObj(input)) {

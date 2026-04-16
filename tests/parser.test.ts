@@ -47,6 +47,10 @@ Final:
     expect(extractJSON("{'name': 'John'}")).toEqual({ name: 'John' });
   });
 
+  it('parses single-quoted JSON with apostrophe inside a string value', () => {
+    expect(extractJSON('{\'msg\': \'don\'t panic\'}')).toEqual({ msg: "don't panic" });
+  });
+
   it('parses JSON array at root', () => {
     expect(extractJSON('[{"name": "John"}]')).toEqual([{ name: 'John' }]);
   });

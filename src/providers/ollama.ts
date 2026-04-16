@@ -51,7 +51,8 @@ export interface OllamaProviderOptions {
    */
   jsonMode?: boolean;
   /**
-   * Keep model in memory after request.
+   * Passed to Ollama as `keep_alive` (duration string, `true`, or `false`).
+   * Set to **`false`** to unload the model after the request; omit or use **`true`** to keep it loaded.
    * @default true
    */
   keepAlive?: boolean | string;
@@ -132,11 +133,8 @@ export function createOllamaProvider(
       model,
       stream,
       options: buildOptions(),
+      keep_alive: keepAlive,
     };
-
-    if (keepAlive !== undefined) {
-      body.keep_alive = keepAlive;
-    }
 
     if (jsonMode) {
       body.format = 'json';

@@ -56,7 +56,8 @@ function stripTrailingCommas(json: string): string {
 /**
  * Convert single-quoted JSON to double-quoted JSON, handling apostrophes inside strings.
  * Uses a state machine to distinguish string-delimiting quotes from apostrophes within values.
- * Escapes any embedded double quotes and converts internal apostrophes appropriately.
+ * Escapes embedded double quotes inside values. Apostrophes that are not string delimiters are
+ * emitted as literal `'` (valid inside JSON double-quoted strings — do not use `\\'`, which JSON.parse rejects).
  */
 function singleQuotedToDoubleQuoted(s: string): string {
   const result: string[] = [];
@@ -99,7 +100,7 @@ function singleQuotedToDoubleQuoted(s: string): string {
           result.push('"');
           inString = false;
         } else {
-          result.push("\\'");
+          result.push("'");
         }
       }
       continue;
