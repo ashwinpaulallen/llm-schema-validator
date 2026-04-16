@@ -1,6 +1,6 @@
 # llm-schema-validator
 
-TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extraction, coercion, validation, and retries — works with OpenAI, Anthropic, and custom providers.
+TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extraction, coercion, validation, and retries — works with **OpenAI**, **Anthropic**, **Google Gemini**, **Ollama** (local), and custom providers.
 
 [![npm version](https://img.shields.io/npm/v/llm-schema-validator.svg)](https://www.npmjs.com/package/llm-schema-validator)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/LICENSE)
@@ -25,7 +25,7 @@ Large language models often return JSON that is almost right: extra prose, markd
 
 You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMProvider`**. You get either typed **`data`** with **`success: true`**, or **`success: false`** with **`errors`**, or a thrown error when the run cannot complete (see [Errors](#errors-and-exceptions)).
 
-> **Note:** The native **`Schema`** type is a small TypeScript field map. You can write it by hand, or convert from **[Zod](https://zod.dev/)** via **`fromZod()`** or from **[JSON Schema draft-07](https://json-schema.org/)** via **`fromJsonSchema()`** (e.g. OpenAPI components). The runtime model is not the full JSON Schema spec, but many common definitions map cleanly.
+> **Note:** The native **`Schema`** type is a small TypeScript field map. You can write it by hand, or convert from **[Zod](https://zod.dev/)** via **`fromZod()`** or from **[JSON Schema draft-07](https://json-schema.org/)** via **`fromJsonSchema()`** (e.g. OpenAPI components). The runtime model is not the full JSON Schema spec, but many common definitions map cleanly. For TypeScript inference on **`fromJsonSchema`**, install **`@types/json-schema`** as a **dev** dependency.
 
 ---
 
@@ -34,7 +34,7 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **`query()`** — End-to-end flow: prompt → model → parse → coerce → validate → retry.
 - **`defineSchema()`** — Typed helper so schema objects stay autocomplete-friendly.
 - **Adapters** — **`fromZod(z.object(…))`** and **`fromJsonSchema({ type: 'object', … })`** to reuse Zod or JSON Schema (draft-07) definitions as a **`Schema`**.
-- **Built-in providers** — `createOpenAIProvider` (Chat Completions), `createAnthropicProvider` (Messages API), `createCustomProvider`; **`QueryResult.usage`** aggregates **prompt / completion / total tokens** when the provider reports them (OpenAI & Anthropic SDKs); **`QueryResult.durationMs`** reports total wall-clock latency.
+- **Built-in providers** — **`createOpenAIProvider`** (Chat Completions, optional **streaming** and **structured JSON Schema outputs**), **`createAnthropicProvider`** (Messages API), **`createGeminiProvider`** (Gemini REST), **`createOllamaProvider`** (local Ollama), **`createCustomProvider`**; **`QueryResult.usage`** aggregates **prompt / completion / total tokens** when the provider reports them; **`QueryResult.durationMs`** reports total wall-clock latency.
 - **Object or array root** — Default top-level JSON object, or **`rootType: 'array'`** with **`arraySchema`** for a list-shaped response.
 - **`anyOf` unions** — A field can list multiple alternatives (`string` **or** `number`, etc.); coercion tries branches **in order**.
 - **`const` literals** — Exact value match per field (discriminated unions, fixed `kind` strings).
@@ -43,11 +43,13 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **Few-shot `fewShot`** — Optional input → JSON output pairs injected into the user message for consistent structure on hard schemas.
 - **`chainOfThought`** — Optional flag: prompt asks the model to reason in plain text first, then emit the final JSON (more tokens, often better on difficult extractions).
 - **`promptTemplate`** — Optional `(context) => string` to wrap the full user message; **`PromptTemplateContext`** includes `builtPrompt`, `taskPrompt`, `attempt`, `maxAttempts`, `rootKind`, `isRetry`.
-- **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional `format` checks (`email`, `url`, `date`); optional field **`examples`** for prompt hints (separate from strict **`enum`**).
+- **Coercion & validation** — Strings, numbers, booleans, nested objects, arrays, optional **`format`** checks (**`email`**, **`url`**, **`date`**, **`uuid`**, **`datetime`**, **`time`**, **`ipv4`**, **`ipv6`**, **`hostname`**, **`phone`**); **`multipleOf`** (numbers), **`uniqueItems`** (arrays); optional field **`examples`** for prompt hints (validate with **`validateExamples()`** to catch drift).
 - **Retries** — Configurable **`maxRetries`**, optional **exponential backoff** via **`retryDelayMs`** / **`retryBackoffMultiplier`**.
 - **Standalone APIs** — **`validate`**, **`coerce`**, **`validateRootArray`**, **`coerceRootArray`** for JSON you already parsed elsewhere.
 - **`onAttempt`** — Callback with attempt index, per-attempt error strings, and **`meta.durationMs`**; **`QueryResult.durationMs`** is total wall-clock time for the whole call.
 - **`onComplete`** — Once at end with **`QueryCompletionSummary`** (`success`, `attempts`, `durationMs`, `errors`, `usage`) on success, **`fallbackToPartial`**, **`QueryRetriesExhaustedError`**, or **`ProviderError`** (metrics without wrapping every call in try/catch).
+- **More `query` options** — **`dependentRequired`** (conditional required fields), **`onPromptBuilt`**, **`onProviderStart`**, **`onProviderEnd`**, **`onCoercionApplied`**, optional **`errorMessages`** (**`ErrorMessageTemplates`**) for i18n / custom copy.
+- **Schema utilities** — **`diffSchemas`** / **`generateMigrationGuide`**, **`toJsonSchema`** (export to JSON Schema draft-07), **`validateExamples`**, **`detectRuntime`** / **`checkRuntimeCompatibility`** / **`assertRuntimeCompatible`**.
 - **Diagnostics** — **`logLevel`** (`'silent'` … `'debug'`) or inject a **`logger`** with optional **`log(level, …)`** (avoid logging secrets in production).
 - **Dual module format** — **ESM** and **CommonJS** builds (`import` / `require`).
 
@@ -87,7 +89,7 @@ The built-in adapters load their SDK **when you first call** `complete()` — yo
 npm install zod
 ```
 
-`fromJsonSchema` has no extra runtime dependency (types use **`@types/json-schema`** for authoring only).
+`fromJsonSchema` has no extra runtime dependency. For editor/types on **`JSONSchema7`**, add **`@types/json-schema`** as a **devDependency** in your app.
 
 ---
 
@@ -133,7 +135,7 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 
 | Example | Description |
 |--------|-------------|
-| **[Node.js + OpenAI Chat](examples/nodejs-openai/README.md)** | **`llm-schema-validator@1.3.0`** + **`openai`**: offline **`fromZod` / `fromJsonSchema` / `coerce` / `validate`**, online **`query`** (object + array roots, hooks, few-shot, `promptTemplate`, cross-field `validate`). |
+| **[Node.js + OpenAI Chat](examples/nodejs-openai/README.md)** | **`llm-schema-validator@1.4.0`** + **`openai`**: offline **`fromZod` / `fromJsonSchema` / `coerce` / `validate`**, online **`query`** (object + array roots, hooks, few-shot, `promptTemplate`, cross-field `validate`). |
 | **[NestJS + OpenAI Chat](examples/nestjs-openai/README.md)** | NestJS: **`GET /offline`** (adapters, no API key) and **`GET /demo`** (full **`query`** with hooks and **`durationMs` / `usage`** on the result). |
 
 ---
@@ -147,7 +149,13 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 | `validate`, `coerce`, `validateRootArray`, `coerceRootArray` | Standalone validation/coercion (same rules as inside `query`): object roots use `validate`/`coerce`; array roots use `validateRootArray`/`coerceRootArray` with a `type: 'array'` field schema. |
 | `fromZod`, `ZodAdapterError`, `InferFromZod` | Convert a Zod `z.object()` to a **`Schema`**; **`InferFromZod`** matches **`z.infer`**. Requires the **`zod`** package. |
 | `fromJsonSchema`, `JsonSchemaAdapterError` | Convert a **JSON Schema draft-07** object schema to a **`Schema`** (same-document **`$ref`** to `#/definitions` / `#/$defs` supported). |
-| `createOpenAIProvider`, `OpenAIProviderOptions`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createCustomProvider` | Ready-made `LLMProvider` implementations and their factory option types. |
+| `toJsonSchema` | Export a **`Schema`** to JSON Schema draft-07 (documentation, OpenAPI, OpenAI structured outputs). |
+| `diffSchemas`, `generateMigrationGuide`, `SchemaDiff`, `FieldChange` | Compare two **`Schema`** values and produce a migration-style summary. |
+| `validateExamples`, `ExampleValidationResult`, `ExampleValidationError` | Check that **`examples`** on fields satisfy **`enum`** / **`const`** / length / **`pattern`**. |
+| `defaultErrorMessages`, `createErrorMessageGenerator`, `ErrorMessageGenerator` | Default and merged **`ErrorMessageTemplates`** for **`query({ errorMessages: … })`**. |
+| `detectRuntime`, `checkRuntimeCompatibility`, `assertRuntimeCompatible`, `RuntimeEnvironment`, `RuntimeCompatibility` | Best-effort runtime detection (Node, Deno, Bun, Workers, browser). |
+| `createOpenAIProvider`, `OpenAIProviderOptions`, `OpenAIStructuredOutputsConfig`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createGeminiProvider`, `GeminiProviderOptions`, `createOllamaProvider`, `OllamaProviderOptions`, `createCustomProvider` | Ready-made **`LLMProvider`** / **`StreamingLLMProvider`** factories and option types. |
+| `StreamingLLMProvider`, `StreamChunk`, `isStreamingProvider` | Streaming adapters (e.g. OpenAI with **`stream: true`**). |
 | `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
 | `LLMProvider`, `CompleteOptions`, `LLMProviderCompleteResult`, `LLMCompletion`, `CompletionUsage`, `Schema`, `FieldSchema`, `FewShotExample`, `PromptTemplateContext`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryCompletionSummary`, `QueryAttemptMeta`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
 | `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError`, `ZodAdapterError`, `JsonSchemaAdapterError` | Error classes (see [Errors](#errors-and-exceptions)). |
@@ -200,6 +208,12 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 | `logger` | `QueryLogger?` | Prefer **`logger.log(level, message, …args)`** for level-aware routing; otherwise **`logger.debug(message, …)`** receives all emitted lines. If omitted, messages go to **`console.error` / `warn` / `info` / `debug`** by level. |
 | `onAttempt` | `(attempt, errors, meta?) => void?` | After each finished **`complete()`** for that attempt: **`attempt`** is 1-based; **`errors`** is empty on success. **`meta.durationMs`** (optional in the type, always passed at runtime) is per-attempt wall-clock time after any backoff before that attempt. |
 | `onComplete` | `(summary: QueryCompletionSummary) => void?` | Once when the query **terminates**: same fields as **`QueryResult`** except **`data`** — **`success`**, **`attempts`**, **`durationMs`**, **`errors`**, **`usage`**. Runs on success, **`fallbackToPartial`**, **`QueryRetriesExhaustedError`**, and **`ProviderError`**. |
+| `dependentRequired` | `Record<string, readonly string[]>?` | **Object root only.** If a **trigger** key is present, the listed fields are required (e.g. `{ creditCard: ['billingAddress'] }`). |
+| `onPromptBuilt` | `(prompt, attempt) => void?` | After the user message is fully built, before **`complete()`**. |
+| `onProviderStart` | `(attempt) => void?` | Immediately before **`provider.complete()`**. |
+| `onProviderEnd` | `(attempt, durationMs, rawText?) => void?` | After **`complete()`** returns or throws; **`rawText`** omitted on failure. |
+| `onCoercionApplied` | `(before, after, attempt) => void?` | After coercion when **`coerce: true`**. |
+| `errorMessages` | `ErrorMessageTemplates?` | Optional localized or custom templates for validation-style messages (see **`defaultErrorMessages`**). |
 | `signal` | `AbortSignal?` | Passed to each `provider.complete()` (and merged with `providerTimeoutMs`). Aborting ends the current attempt with an error (same as a failed provider call). |
 | `providerTimeoutMs` | `number?` | **Default: none.** Maximum time in milliseconds for **each** `complete()` call. Prevents hung LLM requests from blocking forever; uses `AbortSignal` and races the promise so `query` returns even if a custom provider ignores cancellation. |
 | `validate` | `(data) => string \| null?` | **Cross-field validation** after per-field checks on the **coerced** root: object root → `Record<string, unknown>`; array root → `unknown[]`. Return **`null`** if OK, or an error message string. |
@@ -232,11 +246,13 @@ Either a **single-type** field (`type` + constraints) or a **union** field (`any
 | `enum` | `(string \| number)[]?` | Value must equal one of the listed literals (after coercion). Use with `string`, `number`, or `boolean`. |
 | `validate` | `(value: unknown) => string \| null?` | **Per-field** custom check after built-in validation for that value. Return **`null`** if valid, else a short message. |
 | `minimum` / `maximum` | `number?` | Inclusive bounds for `type: 'number'`. |
+| `multipleOf` | `number?` | Value must be a multiple of this number (e.g. **`0.01`** for two decimal places). |
 | `integer` | `boolean?` | If `true`, number must be an integer. |
 | `minLength` / `maxLength` | `number?` | String length (UTF-16 code units). |
 | `pattern` | `string?` | ECMAScript regex **without** `/` delimiters (e.g. `^\\d{5}$`). |
 | `minItems` / `maxItems` | `number?` | Array length bounds. |
-| `format` | `'email' \| 'url' \| 'date'?` | For `type: 'string'` only (see [Schema guide](#schema-definition-guide)). |
+| `uniqueItems` | `boolean?` | If `true`, array elements must be unique (compared via **`JSON.stringify`**). |
+| `format` | see [String formats](#string-formats-type-string--format) above | For `type: 'string'` only. |
 | `default` | `unknown?` | Applied during coercion when the key is missing or the value is nullish (unless `nullable` preserves `null`). |
 | `description` | `string?` | Included in prompts to steer the model. |
 | `examples` | `string[]?` | Example values shown in the schema outline (hints for the model). **Not** validated — use `enum` for strict allowed values. |
@@ -279,6 +295,8 @@ await query({
 ```
 
 - **`createOpenAIProvider(apiKey, model?, options?)`** — Default model: **`gpt-4o`**. **`response_format: { type: 'json_object' }`** is applied by default (OpenAI JSON mode) to reduce invalid JSON; override with **`response_format: { type: 'text' }`** if the model does not support JSON mode. Other **`options`** fields: **`temperature`**, **`top_p`**, **`seed`**, **`response_format`** (or pass **`options` alone as the second argument**). Maps Chat Completions **`usage`** (`prompt_tokens`, `completion_tokens`, `total_tokens`) into **`CompletionUsage`** for **`query()`** aggregation.
+- **`stream: true`** — Returns a **`StreamingLLMProvider`**: call **`stream(prompt, init?)`** for async chunks (**`StreamChunk`**: **`text`**, **`done`**, optional **`usage`** on the final chunk). **`complete()`** still works on the same object.
+- **`structuredOutputs: { schema, name?, skipValidation?, strict? }`** — Uses OpenAI **structured outputs** (**`response_format.type: 'json_schema'`**) with a JSON Schema derived from your **`Schema`** via **`toJsonSchema()`**. When **`skipValidation: true`**, you may rely on the model’s guarantee (still parse in **`query`** as usual unless you add your own shortcut).
 
 ### Anthropic (Messages API)
 
@@ -302,6 +320,44 @@ await query({
 
 - **`createAnthropicProvider(apiKey, model?)`** — Second argument can be a **model id string** (same as before).
 - **`createAnthropicProvider(apiKey, options?)`** — **`options.model`** (default **`claude-sonnet-4-6`**, Anthropic’s current Sonnet alias) and **`options.maxTokens`** (default **`8192`**, maps to Anthropic `max_tokens`). Also supports **`temperature`**, **`top_p`**, **`top_k`**, **`seed`**, and **`stop_sequences`**, passed through to `messages.create`. Maps **`usage.input_tokens` / `output_tokens`** to **`CompletionUsage`** (and sets **`totalTokens`** to their sum when both are present).
+
+### Google Gemini (REST API)
+
+```typescript
+import { createGeminiProvider, query, defineSchema } from 'llm-schema-validator';
+
+const provider = createGeminiProvider(process.env.GEMINI_API_KEY!, {
+  model: 'gemini-1.5-flash',
+  temperature: 0.2,
+});
+
+await query({
+  prompt: 'Return one JSON object with key hello.',
+  schema: defineSchema({ hello: { type: 'string', required: true } }),
+  provider,
+});
+```
+
+- **`createGeminiProvider(apiKey, options?)`** — Uses **`fetch`** against **`generativelanguage.googleapis.com`** (no **`@google/generative-ai`** peer dependency). API key is sent as **`x-goog-api-key`**. Optional **`stream: true`** for **`StreamingLLMProvider`**. **`jsonMode`** (default **`true`**) sets **`application/json`** response MIME type.
+
+### Ollama (local)
+
+```typescript
+import { createOllamaProvider, query, defineSchema } from 'llm-schema-validator';
+
+const provider = createOllamaProvider({
+  model: 'llama3.2',
+  baseUrl: 'http://localhost:11434',
+});
+
+await query({
+  prompt: 'Return {"ok": true}',
+  schema: defineSchema({ ok: { type: 'boolean', required: true } }),
+  provider,
+});
+```
+
+- **`createOllamaProvider(options?)`** — **`/api/chat`** with **`format: 'json'`** by default. **`keep_alive`** is sent on every request (default **`true`**; set **`keepAlive: false`** to unload the model after the call). Optional **`stream: true`**.
 
 ### Custom (any async function)
 
@@ -383,13 +439,19 @@ await query({
 - **`array`** — `Array.isArray`. Use `itemType` for homogeneous elements; with `itemType: 'object'`, set `itemProperties`.
 - **`object`** — Plain objects only (not arrays). Use `properties` for nested fields.
 
-**String formats** (`type: 'string'` + `format`)
+### String formats (`type: 'string'` + `format`)
 
 | `format` | Rule |
 |----------|------|
 | `email` | Simple shape: exactly one `@`, non-empty local and domain parts, domain has a dot-separated host with a TLD of at least two characters. Not a full RFC 5322 / DNS validation. |
 | `url` | Parses as an absolute **`http:`** or **`https:`** URL with a non-empty host (WHATWG `URL`). |
 | `date` | **Calendar date only:** `YYYY-MM-DD` (UTC), with a real calendar day (rejects e.g. `2024-02-30`). Not arbitrary strings accepted by `Date.parse`. |
+| `datetime` | ISO 8601 datetime (date + time + optional offset / `Z`). |
+| `time` | ISO 8601 time component. |
+| `uuid` | UUID version 4. |
+| `ipv4` / `ipv6` | IPv4 or IPv6 address strings. |
+| `hostname` | DNS hostname shape (best-effort). |
+| `phone` | E.164 (`+` and digits, length limits per E.164). |
 
 **Other constraints** — See the [`FieldSchema`](#fieldschema) table: `enum`, `minimum` / `maximum`, `integer`, `minLength` / `maxLength`, `pattern`, `minItems` / `maxItems`, `nullable`. The **`examples`** field only affects prompts (suggested vocabulary), not validation. Optional fields may be omitted; if the key is present with `null`, set `nullable: true` or validation fails.
 
@@ -464,6 +526,15 @@ const schema = fromJsonSchema({
 ```
 
 Expect **draft-07** object roots. Same-document **`$ref`** to **`#/definitions`** / **`#/$defs`** is supported; unsupported constructs throw **`JsonSchemaAdapterError`**. No runtime JSON Schema dependency (only this package’s internal model).
+
+### Schema utilities and runtime helpers
+
+| API | Purpose |
+|-----|---------|
+| **`toJsonSchema(schema)`** | Build a JSON Schema draft-07 document from a **`Schema`** (for docs, OpenAPI, or **`createOpenAIProvider({ structuredOutputs: { schema } })`**). |
+| **`diffSchemas(oldSchema, newSchema)`** / **`generateMigrationGuide(diff)`** | List added / removed / changed fields between two **`Schema`** maps; optional Markdown migration text. |
+| **`validateExamples(schema)`** | Ensure **`examples`** on string fields respect **`enum`**, **`const`**, length, and **`pattern`** (optional CI / tests). |
+| **`detectRuntime()`** / **`checkRuntimeCompatibility()`** | Best-effort environment hints (**Node**, **Deno**, **Bun**, **cloudflare-workers**, **browser**, **unknown**). Not authoritative for security boundaries (see JSDoc). |
 
 ---
 

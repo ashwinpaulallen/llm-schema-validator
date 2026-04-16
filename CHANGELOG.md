@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-16
+
+### Added
+
+- **Providers**
+  - **`createGeminiProvider(apiKey, options?)`** — Google Gemini REST API (`generativelanguage.googleapis.com`), optional **`stream`**, JSON mode via **`responseMimeType`**. API key sent with **`x-goog-api-key`** (not in the URL query string).
+  - **`createOllamaProvider(options?)`** — Local **[Ollama](https://ollama.com/)** **`/api/chat`** with **`format: 'json'`** by default, configurable **`baseUrl`**, **`model`**, sampling options, optional **`stream`**, and **`keep_alive`** (always sent; default **`true`**; set **`keepAlive: false`** to opt out).
+  - **OpenAI — streaming:** **`OpenAIProviderOptions.stream: true`** returns a **`StreamingLLMProvider`** with **`stream(prompt, init?)`** yielding **`StreamChunk`** (`text`, `done`, optional **`usage`**). Final **`done: true`** is emitted only after the stream ends (usage may arrive on an intermediate chunk and is attached to the closing chunk).
+  - **OpenAI — structured outputs:** **`structuredOutputs: { schema, name?, skipValidation?, strict? }`** sets Chat Completions **`response_format: { type: 'json_schema', json_schema: … }`** using **`toJsonSchema()`**. Provider exposes **`__usesStructuredOutputs`** and **`__skipValidation`** when enabled.
+  - **`StreamingLLMProvider`**, **`StreamChunk`**, **`StreamEvent`**, **`isStreamingProvider()`** in **`types`**.
+- **Query / options**
+  - **`dependentRequired`** on **`QueryObjectOptions`** — e.g. `{ creditCard: ['billingAddress'] }` when a trigger key is present, listed fields become required.
+  - **Telemetry hooks:** **`onPromptBuilt`**, **`onProviderStart`**, **`onProviderEnd`**, **`onCoercionApplied`** (see JSDoc on **`QueryOptionsBase`**).
+  - **`errorMessages`** — optional **`ErrorMessageTemplates`** for localized or branded messages; **`createErrorMessageGenerator`**, **`defaultErrorMessages`**.
+- **Validation / schema**
+  - **String `format`:** **`uuid`**, **`datetime`**, **`time`**, **`ipv4`**, **`ipv6`**, **`hostname`**, **`phone`** (E.164), in addition to **`email`**, **`url`**, **`date`**.
+  - **`multipleOf`** on number fields (JSON Schema–style, with floating-point tolerance).
+  - **`uniqueItems`** on **`type: 'array'`** (uniqueness via **`JSON.stringify`** per element).
+  - **Pattern regex cache** capped (FIFO) to avoid unbounded growth in long-lived processes.
+- **Utilities**
+  - **`diffSchemas`**, **`generateMigrationGuide`**, **`SchemaDiff`**, **`FieldChange`** — compare two **`Schema`** values (deep equality for nested key order).
+  - **`toJsonSchema(schema)`** — export a **`Schema`** to JSON Schema draft-07 (for docs, OpenAPI, OpenAI structured outputs).
+  - **`validateExamples(schema)`** — optional check that **`examples`** strings satisfy **`enum`** / **`const`** / length / **`pattern`** (catch prompt drift).
+  - **`checkRuntimeCompatibility`**, **`detectRuntime`**, **`assertRuntimeCompatible`** — environment hints (**Node**, **Deno**, **Bun**, **cloudflare-workers**, **browser**, **unknown**); Workers vs browser Service Worker distinguished when **`ServiceWorkerGlobalScope`** is available.
+- **Type inference** — **`anyOf`** object branches infer nested **`properties`**; **`ExtractDiscriminator`**, **`NarrowByDiscriminator`** exported from **`schema-infer`** for discriminated unions.
+
+### Changed
+
+- **`@types/json-schema`** is a **devDependency** only (not a peer dependency). Consumers who want typings for **`fromJsonSchema`** should install **`npm install -D @types/json-schema`**.
+- **OpenAI `createOpenAIProvider`:** single dynamic import per request path via **`ensureClientAndModule()`** (no duplicate **`loadOpenAIModule()`** in **`complete()`**).
+- **Default `typeMismatch` template:** uses **`must match: ${expected}`** (no fragile **a/an** heuristics).
+- **`createErrorMessageGenerator`** returns **`mergeErrorTemplates(templates)`** directly.
+
+### Fixed
+
+- **`schema-diff` `fieldsAreEqual`:** deep structural equality (sorted object keys at each level; array order preserved) instead of incorrect **`JSON.stringify` replacer** usage.
+- **`retry`:** **`providerStartTime`** initialized to **`0`**; **`onProviderEnd`** duration uses **`0`** if the provider threw before timing started.
+- **Single-quoted JSON repair:** internal apostrophes emit a literal **`'`** in the double-quoted output (valid JSON), not **`\\'`**.
+- **Runtime detection:** **`caches` + no `navigator`** no longer always maps to Cloudflare when **`globalThis instanceof ServiceWorkerGlobalScope`** (browser Service Workers). **`detectRuntime`** JSDoc documents limitations.
+
+[1.4.0]: https://github.com/ashwinpaulallen/llm-schema-validator/releases/tag/v1.4.0
+
 ## [1.3.0] - 2026-04-15
 
 ### Breaking
