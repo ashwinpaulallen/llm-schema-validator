@@ -27,7 +27,20 @@ export interface FieldSchemaBase {
  */
 export interface SimpleFieldSchema extends FieldSchemaBase {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object';
-  format?: 'email' | 'url' | 'date';
+  /**
+   * String format validation. Supported formats:
+   * - `email` - Simple email shape (local@domain.tld)
+   * - `url` - Absolute http(s) URL
+   * - `date` - ISO 8601 calendar date (YYYY-MM-DD)
+   * - `datetime` - ISO 8601 datetime (YYYY-MM-DDTHH:MM:SSZ)
+   * - `time` - ISO 8601 time (HH:MM:SS)
+   * - `uuid` - UUID v4
+   * - `ipv4` - IPv4 address
+   * - `ipv6` - IPv6 address
+   * - `hostname` - DNS hostname
+   * - `phone` - E.164 phone number (+14155551234)
+   */
+  format?: 'email' | 'url' | 'date' | 'datetime' | 'time' | 'uuid' | 'ipv4' | 'ipv6' | 'hostname' | 'phone';
   /**
    * Exact value (after coercion), like JSON Schema `const` — useful for discriminators, e.g.
    * `{ type: 'string', const: 'invoice' }`.
@@ -44,6 +57,11 @@ export interface SimpleFieldSchema extends FieldSchemaBase {
   maximum?: number;
   /** When `true`, value must be an integer (no fractional part). */
   integer?: boolean;
+  /**
+   * Value must be a multiple of this number. Useful for decimal precision constraints.
+   * @example { type: 'number', multipleOf: 0.01 } // Two decimal places
+   */
+  multipleOf?: number;
   /** Minimum string length (Unicode code units). */
   minLength?: number;
   /** Maximum string length (Unicode code units). */
@@ -57,6 +75,11 @@ export interface SimpleFieldSchema extends FieldSchemaBase {
   minItems?: number;
   /** Maximum array length. */
   maxItems?: number;
+  /**
+   * When `true`, all array elements must be unique (compared by JSON stringification).
+   * @example { type: 'array', uniqueItems: true }
+   */
+  uniqueItems?: boolean;
   /** Child field definitions for nested objects (`type: 'object'`). */
   properties?: Schema;
   /** When `type` is `'array'`, optional uniform type for each element. */
@@ -125,9 +148,73 @@ export interface LLMCompletion {
 /** Return type of {@link LLMProvider.complete}. */
 export type LLMProviderCompleteResult = string | LLMCompletion;
 
+/**
+ * A chunk emitted during streaming completion.
+ */
+export interface StreamChunk {
+  /** The text delta for this chunk. */
+  text: string;
+  /** Whether this is the final chunk (stream complete). */
+  done: boolean;
+  /** Partial usage info (usually only available on final chunk). */
+  usage?: CompletionUsage;
+}
+
+/**
+ * Event types emitted during streaming.
+ */
+export type StreamEvent =
+  | { type: 'chunk'; chunk: StreamChunk }
+  | { type: 'error'; error: Error }
+  | { type: 'done'; fullText: string; usage?: CompletionUsage };
+
+/**
+ * Extended provider interface that supports streaming responses.
+ * Implement this for providers that support streaming (OpenAI, Anthropic, etc.).
+ */
+export interface StreamingLLMProvider extends LLMProvider {
+  /**
+   * Whether this provider supports streaming.
+   */
+  readonly supportsStreaming: true;
+
+  /**
+   * Stream a completion, yielding chunks as they arrive.
+   * The final chunk has `done: true` and may include usage info.
+   */
+  stream(prompt: string, init?: CompleteOptions): AsyncIterable<StreamChunk>;
+}
+
+/**
+ * Check if a provider supports streaming.
+ */
+export function isStreamingProvider(provider: LLMProvider): provider is StreamingLLMProvider {
+  return 'supportsStreaming' in provider && provider.supportsStreaming === true;
+}
+
 /** Adapter interface that any LLM provider must implement. */
 export interface LLMProvider {
   complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult>;
+  /**
+   * Optional identifier for internal diagnostics (e.g., `'openai'`, `'anthropic'`).
+   * Used to emit compatibility warnings when applicable.
+   */
+  readonly __providerId?: string;
+  /**
+   * When `true`, indicates the provider is using OpenAI's `json_object` response format,
+   * which requires a top-level object (arrays are not supported).
+   */
+  readonly __usesJsonObjectMode?: boolean;
+  /**
+   * When `true`, indicates the provider is using OpenAI's native Structured Outputs,
+   * which guarantees the response matches the provided JSON Schema.
+   */
+  readonly __usesStructuredOutputs?: boolean;
+  /**
+   * When `true` (and `__usesStructuredOutputs` is also true), validation can be skipped
+   * since the output is guaranteed to match the schema.
+   */
+  readonly __skipValidation?: boolean;
 }
 
 /**
@@ -167,6 +254,49 @@ export interface FewShotExample {
 export interface QueryAttemptMeta {
   /** Wall-clock milliseconds for this attempt (after any backoff before this attempt, until `onAttempt` runs). */
   durationMs: number;
+}
+
+/**
+ * Custom error message templates for i18n/localization.
+ * Each function generates a localized error message for a specific validation failure type.
+ */
+export interface ErrorMessageTemplates {
+  /** Field is required but missing or undefined. */
+  required?: (field: string) => string;
+  /** Value is null but field is not nullable. */
+  notNullable?: (field: string) => string;
+  /** Value has wrong type. */
+  typeMismatch?: (field: string, expected: string, received: string) => string;
+  /** String does not match pattern. */
+  patternMismatch?: (field: string, pattern: string) => string;
+  /** String is too short. */
+  minLength?: (field: string, minLength: number, actualLength: number) => string;
+  /** String is too long. */
+  maxLength?: (field: string, maxLength: number, actualLength: number) => string;
+  /** Number is below minimum. */
+  minimum?: (field: string, minimum: number, value: number) => string;
+  /** Number is above maximum. */
+  maximum?: (field: string, maximum: number, value: number) => string;
+  /** Number is not a multiple of the specified value. */
+  multipleOf?: (field: string, multipleOf: number, value: number) => string;
+  /** Number is not an integer. */
+  notInteger?: (field: string, value: number) => string;
+  /** Value is not in the allowed enum values. */
+  enumMismatch?: (field: string, allowed: readonly (string | number)[]) => string;
+  /** Value does not match const. */
+  constMismatch?: (field: string, expected: unknown) => string;
+  /** Array has too few items. */
+  minItems?: (field: string, minItems: number, actualItems: number) => string;
+  /** Array has too many items. */
+  maxItems?: (field: string, maxItems: number, actualItems: number) => string;
+  /** Array contains duplicate items. */
+  uniqueItems?: (field: string) => string;
+  /** String format validation failed. */
+  formatMismatch?: (field: string, format: string) => string;
+  /** Custom validation failed. */
+  customValidation?: (field: string, message: string) => string;
+  /** Dependent field is required. */
+  dependentRequired?: (field: string, triggerField: string) => string;
 }
 
 /**
@@ -220,8 +350,15 @@ export interface QueryOptionsBase {
    */
   logLevel?: QueryLogLevel;
   /**
-   * @deprecated Use **`logLevel: 'debug'`** (or **`'info'`**, etc.) instead.
+   * **DEPRECATED** — Use {@link QueryOptionsBase.logLevel | logLevel} instead.
+   *
+   * This option will be removed in a future major version.
+   * Replace `debug: true` with `logLevel: 'debug'` for equivalent behavior.
+   *
    * When **`true`** and **`logLevel`** is omitted, effective level is **`debug`**.
+   *
+   * @deprecated Since v1.2.0. Use `logLevel: 'debug'` (or `'info'`, `'warn'`, `'error'`) instead.
+   * @see {@link QueryOptionsBase.logLevel} for the replacement option.
    */
   debug?: boolean;
   /**
@@ -240,6 +377,26 @@ export interface QueryOptionsBase {
    * (same shape as assembling from {@link QueryResult}, without `data`). Use for metrics without wrapping every call in try/catch.
    */
   onComplete?: (summary: QueryCompletionSummary) => void;
+  /**
+   * Called after the prompt is fully built but before `provider.complete()` is called.
+   * Useful for logging, debugging, or modifying metrics. The prompt cannot be changed here; use `promptTemplate` for that.
+   */
+  onPromptBuilt?: (prompt: string, attempt: number) => void;
+  /**
+   * Called immediately before `provider.complete()` is invoked.
+   * Useful for fine-grained timing and tracing.
+   */
+  onProviderStart?: (attempt: number) => void;
+  /**
+   * Called immediately after `provider.complete()` returns (success or failure).
+   * Receives the raw response text (if successful) or undefined (if failed), plus timing info.
+   */
+  onProviderEnd?: (attempt: number, durationMs: number, rawText: string | undefined) => void;
+  /**
+   * Called after coercion is applied to the parsed data.
+   * Useful for debugging coercion behavior — compare `before` and `after` to see what changed.
+   */
+  onCoercionApplied?: (before: unknown, after: unknown, attempt: number) => void;
   /**
    * Abort the current attempt (and any in-flight provider request that respects `signal`).
    * Applies to each `provider.complete()` call; a new attempt uses the same outer signal state.
@@ -270,6 +427,17 @@ export interface QueryOptionsBase {
    * Receives {@link PromptTemplateContext} so you can vary the wrapper by attempt, retry vs first try, etc.
    */
   promptTemplate?: (context: PromptTemplateContext) => string;
+  /**
+   * Custom error message templates for i18n or branding. Each function receives the field path
+   * and optionally additional context, and should return the full error message string.
+   *
+   * @example
+   * errorMessages: {
+   *   required: (field) => `El campo "${field}" es obligatorio`,
+   *   typeMismatch: (field, expected, received) => `"${field}": esperado ${expected}, recibido ${received}`,
+   * }
+   */
+  errorMessages?: ErrorMessageTemplates;
 }
 
 /**
@@ -291,6 +459,14 @@ export interface PromptTemplateContext {
 }
 
 /**
+ * Conditional field requirements: if a key is present, the listed fields become required.
+ * @example
+ * { creditCard: ['billingAddress', 'expiryDate'] }
+ * // If 'creditCard' is present, 'billingAddress' and 'expiryDate' are required
+ */
+export type DependentRequired = Record<string, readonly string[]>;
+
+/**
  * Root JSON is a **plain object** whose keys match `schema` (default).
  * `S` is inferred from `schema` when you pass a {@link defineSchema} literal.
  */
@@ -298,6 +474,12 @@ export type QueryObjectOptions<S extends Schema = Schema> = QueryOptionsBase & {
   /** @default 'object' when omitted */
   rootType?: 'object';
   schema: S;
+  /**
+   * Conditional field requirements: if a key is present, the listed fields become required.
+   * @example
+   * { dependentRequired: { creditCard: ['billingAddress'] } }
+   */
+  dependentRequired?: DependentRequired;
   /**
    * After per-field validation passes on the coerced object, run cross-field or dependent rules
    * (e.g. `endDate > startDate`, or required `subtype` when `type === 'x'`).
