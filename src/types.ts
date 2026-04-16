@@ -148,6 +148,50 @@ export interface LLMCompletion {
 /** Return type of {@link LLMProvider.complete}. */
 export type LLMProviderCompleteResult = string | LLMCompletion;
 
+/**
+ * A chunk emitted during streaming completion.
+ */
+export interface StreamChunk {
+  /** The text delta for this chunk. */
+  text: string;
+  /** Whether this is the final chunk (stream complete). */
+  done: boolean;
+  /** Partial usage info (usually only available on final chunk). */
+  usage?: CompletionUsage;
+}
+
+/**
+ * Event types emitted during streaming.
+ */
+export type StreamEvent =
+  | { type: 'chunk'; chunk: StreamChunk }
+  | { type: 'error'; error: Error }
+  | { type: 'done'; fullText: string; usage?: CompletionUsage };
+
+/**
+ * Extended provider interface that supports streaming responses.
+ * Implement this for providers that support streaming (OpenAI, Anthropic, etc.).
+ */
+export interface StreamingLLMProvider extends LLMProvider {
+  /**
+   * Whether this provider supports streaming.
+   */
+  readonly supportsStreaming: true;
+
+  /**
+   * Stream a completion, yielding chunks as they arrive.
+   * The final chunk has `done: true` and may include usage info.
+   */
+  stream(prompt: string, init?: CompleteOptions): AsyncIterable<StreamChunk>;
+}
+
+/**
+ * Check if a provider supports streaming.
+ */
+export function isStreamingProvider(provider: LLMProvider): provider is StreamingLLMProvider {
+  return 'supportsStreaming' in provider && provider.supportsStreaming === true;
+}
+
 /** Adapter interface that any LLM provider must implement. */
 export interface LLMProvider {
   complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult>;
@@ -161,6 +205,16 @@ export interface LLMProvider {
    * which requires a top-level object (arrays are not supported).
    */
   readonly __usesJsonObjectMode?: boolean;
+  /**
+   * When `true`, indicates the provider is using OpenAI's native Structured Outputs,
+   * which guarantees the response matches the provided JSON Schema.
+   */
+  readonly __usesStructuredOutputs?: boolean;
+  /**
+   * When `true` (and `__usesStructuredOutputs` is also true), validation can be skipped
+   * since the output is guaranteed to match the schema.
+   */
+  readonly __skipValidation?: boolean;
 }
 
 /**

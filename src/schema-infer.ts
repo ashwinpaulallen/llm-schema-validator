@@ -52,9 +52,23 @@ export type InferSimpleFieldValue<F extends SimpleFieldSchema> = F['type'] exten
           ? InferArrayElement<F>[]
           : unknown;
 
+/**
+ * Infer the type for a single anyOf branch.
+ * Handles object branches with properties for discriminated unions.
+ */
+type InferAnyOfBranch<B extends AnyOfBranchSchema> = B['type'] extends 'object'
+  ? B['properties'] extends Schema
+    ? InferSchema<B['properties']>
+    : Record<string, unknown>
+  : InferSimpleFieldValue<SimpleFieldSchema & B>;
+
+/**
+ * Infer a discriminated union from anyOf branches.
+ * Each branch is properly typed, preserving discriminator const values.
+ */
 type InferAnyOfUnion<A extends readonly AnyOfBranchSchema[]> = A[number] extends infer B
   ? B extends AnyOfBranchSchema
-    ? InferSimpleFieldValue<SimpleFieldSchema & B>
+    ? InferAnyOfBranch<B>
     : never
   : never;
 
@@ -76,3 +90,36 @@ type InferArrayElement<F extends SimpleFieldSchema> = F['itemType'] extends 'obj
         : F['itemType'] extends 'array'
           ? unknown
           : unknown;
+
+/**
+ * Extract the discriminator field name from a union schema if it exists.
+ * A discriminator is a string field with `const` values that differ across branches.
+ */
+export type ExtractDiscriminator<U extends UnionFieldSchema> =
+  U['anyOf'][number] extends infer B
+    ? B extends { type: 'object'; properties: infer P }
+      ? P extends Schema
+        ? keyof P extends infer K
+          ? K extends string
+            ? P[K] extends { type: 'string'; const: string }
+              ? K
+              : never
+            : never
+          : never
+        : never
+      : never
+    : never;
+
+/**
+ * Narrow a union type by discriminator value.
+ * Use this to get the specific branch type when you know the discriminator value.
+ *
+ * @example
+ * type MyUnion = InferFieldValue<typeof myUnionField>;
+ * type SpecificBranch = NarrowByDiscriminator<MyUnion, 'type', 'invoice'>;
+ */
+export type NarrowByDiscriminator<
+  T,
+  K extends string,
+  V extends string,
+> = T extends { [P in K]: V } ? T : never;
