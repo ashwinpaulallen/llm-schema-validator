@@ -94,6 +94,153 @@ function validateDate(value: string, path: string): ValidationError[] {
   ];
 }
 
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuidV4(value: string): boolean {
+  return UUID_V4_REGEX.test(value);
+}
+
+function validateUuid(value: string, path: string): ValidationError[] {
+  if (isUuidV4(value)) return [];
+  return [
+    issue(
+      path,
+      'UUID v4 string (e.g. 550e8400-e29b-41d4-a716-446655440000)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid UUID v4`,
+    ),
+  ];
+}
+
+const ISO_DATETIME_REGEX =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+function isIsoDatetime(value: string): boolean {
+  if (value !== value.trim()) return false;
+  const m = value.match(ISO_DATETIME_REGEX);
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const h = Number(m[4]);
+  const min = Number(m[5]);
+  const s = Number(m[6]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  if (h > 23 || min > 59 || s > 59) return false;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
+function validateDatetime(value: string, path: string): ValidationError[] {
+  if (isIsoDatetime(value)) return [];
+  return [
+    issue(
+      path,
+      'ISO 8601 datetime string (e.g. 2024-01-15T14:30:00Z)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid ISO 8601 datetime`,
+    ),
+  ];
+}
+
+const ISO_TIME_REGEX = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))?$/;
+
+function isIsoTime(value: string): boolean {
+  if (value !== value.trim()) return false;
+  const m = value.match(ISO_TIME_REGEX);
+  if (!m) return false;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  const s = Number(m[3]);
+  return h <= 23 && min <= 59 && s <= 59;
+}
+
+function validateTime(value: string, path: string): ValidationError[] {
+  if (isIsoTime(value)) return [];
+  return [
+    issue(
+      path,
+      'ISO 8601 time string (e.g. 14:30:00 or 14:30:00Z)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid ISO 8601 time`,
+    ),
+  ];
+}
+
+const IPV4_REGEX = /^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)$/;
+
+function isIpv4(value: string): boolean {
+  return IPV4_REGEX.test(value);
+}
+
+function validateIpv4(value: string, path: string): ValidationError[] {
+  if (isIpv4(value)) return [];
+  return [
+    issue(
+      path,
+      'IPv4 address (e.g. 192.168.1.1)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid IPv4 address`,
+    ),
+  ];
+}
+
+const IPV6_REGEX =
+  /^(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}|:(?::[0-9a-fA-F]{1,4}){1,7}|::(?:[fF]{4}:)?(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)|(?:[0-9a-fA-F]{1,4}:){1,4}:(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d))$/;
+
+function isIpv6(value: string): boolean {
+  return IPV6_REGEX.test(value);
+}
+
+function validateIpv6(value: string, path: string): ValidationError[] {
+  if (isIpv6(value)) return [];
+  return [
+    issue(
+      path,
+      'IPv6 address (e.g. 2001:0db8:85a3:0000:0000:8a2e:0370:7334)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid IPv6 address`,
+    ),
+  ];
+}
+
+const HOSTNAME_REGEX = /^(?=.{1,253}$)(?:(?![0-9-])[a-zA-Z0-9-]{1,63}(?<!-)\.)*(?![0-9-])[a-zA-Z0-9-]{1,63}(?<!-)$/;
+
+function isHostname(value: string): boolean {
+  if (value.length === 0 || value.length > 253) return false;
+  return HOSTNAME_REGEX.test(value);
+}
+
+function validateHostname(value: string, path: string): ValidationError[] {
+  if (isHostname(value)) return [];
+  return [
+    issue(
+      path,
+      'DNS hostname (e.g. example.com)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid DNS hostname`,
+    ),
+  ];
+}
+
+const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
+
+function isE164Phone(value: string): boolean {
+  return E164_PHONE_REGEX.test(value);
+}
+
+function validatePhone(value: string, path: string): ValidationError[] {
+  if (isE164Phone(value)) return [];
+  return [
+    issue(
+      path,
+      'E.164 phone number (e.g. +14155551234)',
+      value,
+      `[llm-schema-validator] Field "${path}" must be a valid E.164 phone number`,
+    ),
+  ];
+}
+
 function validateStringFormat(
   value: string,
   format: NonNullable<SimpleFieldSchema['format']>,
@@ -106,11 +253,26 @@ function validateStringFormat(
       return validateUrl(value, path);
     case 'date':
       return validateDate(value, path);
+    case 'uuid':
+      return validateUuid(value, path);
+    case 'datetime':
+      return validateDatetime(value, path);
+    case 'time':
+      return validateTime(value, path);
+    case 'ipv4':
+      return validateIpv4(value, path);
+    case 'ipv6':
+      return validateIpv6(value, path);
+    case 'hostname':
+      return validateHostname(value, path);
+    case 'phone':
+      return validatePhone(value, path);
     default:
       return [];
   }
 }
 
+const PATTERN_CACHE_MAX_SIZE = 500;
 const patternRegexCache = new Map<string, RegExp | null>();
 
 function compilePattern(source: string): RegExp | null {
@@ -118,9 +280,17 @@ function compilePattern(source: string): RegExp | null {
   if (hit !== undefined) return hit;
   try {
     const r = new RegExp(source);
+    if (patternRegexCache.size >= PATTERN_CACHE_MAX_SIZE) {
+      const firstKey = patternRegexCache.keys().next().value;
+      if (firstKey !== undefined) patternRegexCache.delete(firstKey);
+    }
     patternRegexCache.set(source, r);
     return r;
   } catch {
+    if (patternRegexCache.size >= PATTERN_CACHE_MAX_SIZE) {
+      const firstKey = patternRegexCache.keys().next().value;
+      if (firstKey !== undefined) patternRegexCache.delete(firstKey);
+    }
     patternRegexCache.set(source, null);
     return null;
   }
@@ -189,6 +359,25 @@ function validateNumberConstraints(value: number, field: SimpleFieldSchema, path
         `[llm-schema-validator] Field "${path}" is above maximum ${field.maximum}`,
       ),
     );
+  }
+  if (
+    typeof field.multipleOf === 'number' &&
+    Number.isFinite(field.multipleOf) &&
+    field.multipleOf > 0
+  ) {
+    const quotient = value / field.multipleOf;
+    const tolerance = 1e-10;
+    const isMultiple = Math.abs(quotient - Math.round(quotient)) < tolerance;
+    if (!isMultiple) {
+      errors.push(
+        issue(
+          path,
+          `multiple of ${field.multipleOf}`,
+          value,
+          `[llm-schema-validator] Field "${path}" must be a multiple of ${field.multipleOf}`,
+        ),
+      );
+    }
   }
   return errors;
 }
@@ -307,6 +496,24 @@ function validateArrayBounds(arr: unknown[], field: SimpleFieldSchema, path: str
           `[llm-schema-validator] Field "${path}" must have at most ${field.maxItems} item(s)`,
         ),
       );
+    }
+  }
+  if (field.uniqueItems === true && n > 1) {
+    const seen = new Set<string>();
+    for (let i = 0; i < n; i++) {
+      const key = JSON.stringify(arr[i]);
+      if (seen.has(key)) {
+        errors.push(
+          issue(
+            path,
+            'array with unique items',
+            arr,
+            `[llm-schema-validator] Field "${path}" contains duplicate items`,
+          ),
+        );
+        break;
+      }
+      seen.add(key);
     }
   }
   return errors;

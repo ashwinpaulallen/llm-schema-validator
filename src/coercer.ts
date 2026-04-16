@@ -16,6 +16,12 @@ function cloneDefault(value: unknown): unknown {
   }
 }
 
+/**
+ * Attempt to coerce a value to a number.
+ * Empty strings are intentionally returned as-is (not coerced to 0 or undefined) so that
+ * validation can report a type mismatch, allowing callers to distinguish "missing/blank"
+ * from explicit numeric input.
+ */
 function coerceNumber(value: unknown): unknown {
   if (typeof value === 'number' && !Number.isNaN(value)) return value;
   if (typeof value === 'string') {

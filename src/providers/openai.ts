@@ -83,7 +83,11 @@ export function createOpenAIProvider(
   const { model, requestOptions } = resolveOpenAIArgs(modelOrOptions, maybeOptions);
   let client: InstanceType<OpenAIModule['default']> | null = null;
 
+  const usesJsonObjectMode = requestOptions?.response_format?.type !== 'text';
+
   return {
+    __providerId: 'openai' as const,
+    __usesJsonObjectMode: usesJsonObjectMode,
     async complete(prompt: string, init?: CompleteOptions): Promise<LLMProviderCompleteResult> {
       const openai = await loadOpenAIModule();
       if (!client) {

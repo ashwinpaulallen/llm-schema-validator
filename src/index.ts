@@ -15,9 +15,20 @@ export * from './errors.js';
 export * from './providers/index.js';
 
 export { coerce, coerceRootArray } from './coercer.js';
+export { defaultErrorMessages, createErrorMessageGenerator, type ErrorMessageGenerator } from './error-messages.js';
 export { fromJsonSchema, JsonSchemaAdapterError } from './from-json-schema.js';
 export { fromZod, type InferFromZod, ZodAdapterError } from './from-zod.js';
+export { diffSchemas, generateMigrationGuide, type SchemaDiff, type FieldChange } from './schema-diff.js';
+export { toJsonSchema } from './to-json-schema.js';
+export {
+  checkRuntimeCompatibility,
+  detectRuntime,
+  assertRuntimeCompatible,
+  type RuntimeEnvironment,
+  type RuntimeCompatibility,
+} from './runtime.js';
 export { validate, validateRootArray } from './validator.js';
+export { validateExamples, type ExampleValidationResult, type ExampleValidationError } from './validate-examples.js';
 
 /**
  * Run a schema-guided LLM request: prompt → parse → coerce → validate, with retries.

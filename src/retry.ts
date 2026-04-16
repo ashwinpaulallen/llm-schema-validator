@@ -11,6 +11,7 @@ import { extractJSON } from './parser.js';
 import type {
   ArrayRootFieldSchema,
   CompletionUsage,
+  DependentRequired,
   FewShotExample,
   PromptTemplateContext,
   QueryArrayOptions,
@@ -24,6 +25,36 @@ import type {
 } from './types.js';
 import { isPlainObject, mergeCompletionUsage, normalizeCompletionResult, toLabel } from './utils.js';
 import { validate, validateRootArray } from './validator.js';
+
+function validateDependentRequired(
+  data: Record<string, unknown>,
+  dependentRequired: DependentRequired | undefined,
+): ValidationError[] {
+  if (!dependentRequired) return [];
+  const errors: ValidationError[] = [];
+  for (const [triggerField, requiredFields] of Object.entries(dependentRequired)) {
+    const hasTrigger =
+      Object.prototype.hasOwnProperty.call(data, triggerField) &&
+      data[triggerField] !== undefined &&
+      data[triggerField] !== null;
+    if (!hasTrigger) continue;
+    for (const reqField of requiredFields) {
+      const hasRequired =
+        Object.prototype.hasOwnProperty.call(data, reqField) &&
+        data[reqField] !== undefined &&
+        data[reqField] !== null;
+      if (!hasRequired) {
+        errors.push({
+          field: reqField,
+          expected: `required (when "${triggerField}" is present)`,
+          received: toLabel(data[reqField]),
+          message: `[llm-schema-validator] Field "${reqField}" is required when "${triggerField}" is present`,
+        });
+      }
+    }
+  }
+  return errors;
+}
 
 function parseFailureErrors(message: string, raw: string, root: 'object' | 'array'): ValidationError[] {
   return [
@@ -272,6 +303,15 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
         '[llm-schema-validator] rootType "array" requires arraySchema with type: "array"',
       );
     }
+    if (options.provider.__usesJsonObjectMode === true) {
+      const warnLog = createDiagLog(options);
+      warnLog(
+        'warn',
+        'rootType "array" with OpenAI json_object mode may fail or produce wrapped output. ' +
+          'OpenAI\'s json_object response format requires a top-level object. ' +
+          'Consider using response_format: { type: "text" } or structured outputs instead.',
+      );
+    }
   }
 
   const queryT0 = Date.now();
@@ -324,7 +364,16 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     const attemptStart = Date.now();
     log('info', `attempt ${attempt}/${maxAttempts}`);
 
+    if (options.onPromptBuilt) {
+      try {
+        options.onPromptBuilt(prompt, attempt);
+      } catch {
+        /* ignore hook errors */
+      }
+    }
+
     let raw: string;
+    let providerStartTime: number;
     try {
       const attemptSignal = combineSignals(options.signal, options.providerTimeoutMs);
       const completeInit =
@@ -334,12 +383,36 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
               ...(attemptSignal !== undefined ? { signal: attemptSignal } : {}),
               ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
             };
+      if (options.onProviderStart) {
+        try {
+          options.onProviderStart(attempt);
+        } catch {
+          /* ignore hook errors */
+        }
+      }
+      providerStartTime = Date.now();
       const task = options.provider.complete(prompt, completeInit);
       const completionRaw = await raceWithSignal(task, attemptSignal);
+      const providerDurationMs = Date.now() - providerStartTime;
       const normalized = normalizeCompletionResult(completionRaw);
       raw = normalized.text;
+      if (options.onProviderEnd) {
+        try {
+          options.onProviderEnd(attempt, providerDurationMs, raw);
+        } catch {
+          /* ignore hook errors */
+        }
+      }
       cumulativeUsage = mergeCompletionUsage(cumulativeUsage, normalized.usage);
     } catch (e) {
+      if (options.onProviderEnd) {
+        try {
+          const providerDurationMs = Date.now() - providerStartTime!;
+          options.onProviderEnd(attempt, providerDurationMs, undefined);
+        } catch {
+          /* ignore hook errors */
+        }
+      }
       const wrapped = new ProviderError(
         `provider.complete() failed: ${e instanceof Error ? e.message : String(e)}`,
         e,
@@ -417,7 +490,15 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
 
       let data: unknown[] = parsed;
       if (coerceEnabled) {
+        const beforeCoerce = parsed;
         data = coerceRootArray(data, arraySchema!);
+        if (options.onCoercionApplied) {
+          try {
+            options.onCoercionApplied(beforeCoerce, data, attempt);
+          } catch {
+            /* ignore hook errors */
+          }
+        }
       }
       lastCoerced = data;
 
@@ -495,11 +576,22 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     const objectOpts = options as QueryObjectOptions<Schema>;
     let data: Record<string, unknown> = parsed;
     if (coerceEnabled) {
+      const beforeCoerce = parsed;
       data = coerce(data, objectSchema);
+      if (options.onCoercionApplied) {
+        try {
+          options.onCoercionApplied(beforeCoerce, data, attempt);
+        } catch {
+          /* ignore hook errors */
+        }
+      }
     }
     lastCoerced = data;
 
     let validationErrors = validate(data, objectSchema);
+    if (validationErrors.length === 0 && objectOpts.dependentRequired) {
+      validationErrors = validateDependentRequired(data, objectOpts.dependentRequired);
+    }
     if (validationErrors.length === 0 && objectOpts.validate) {
       validationErrors = runQueryLevelValidate(() => objectOpts.validate!(data));
     }

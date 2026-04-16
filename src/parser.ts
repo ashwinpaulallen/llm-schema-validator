@@ -54,11 +54,66 @@ function stripTrailingCommas(json: string): string {
 }
 
 /**
- * Convert trivial single-quoted JSON to double-quoted JSON.
- * Only used when the payload has no `"` characters (avoids mangling mixed strings).
+ * Convert single-quoted JSON to double-quoted JSON, handling apostrophes inside strings.
+ * Uses a state machine to distinguish string-delimiting quotes from apostrophes within values.
+ * Escapes any embedded double quotes and converts internal apostrophes appropriately.
  */
 function singleQuotedToDoubleQuoted(s: string): string {
-  return s.replace(/'/g, '"');
+  const result: string[] = [];
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+
+    if (escape) {
+      if (ch === "'") {
+        result.push("'");
+      } else {
+        result.push(ch);
+      }
+      escape = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escape = true;
+      result.push(ch);
+      continue;
+    }
+
+    if (ch === "'") {
+      if (!inString) {
+        result.push('"');
+        inString = true;
+      } else {
+        const afterQuote = s.slice(i + 1).trimStart();
+        const nextChar = afterQuote[0];
+        const isDelimiter =
+          nextChar === undefined ||
+          nextChar === ',' ||
+          nextChar === '}' ||
+          nextChar === ']' ||
+          nextChar === ':';
+        if (isDelimiter) {
+          result.push('"');
+          inString = false;
+        } else {
+          result.push("\\'");
+        }
+      }
+      continue;
+    }
+
+    if (ch === '"' && inString) {
+      result.push('\\"');
+      continue;
+    }
+
+    result.push(ch);
+  }
+
+  return result.join('');
 }
 
 function tryParseJson(text: string): unknown {
@@ -238,7 +293,7 @@ export function extractJSON(raw: string): unknown {
       name: 'single-quoted JSON',
       run: () => {
         const tryCandidate = (s: string) => {
-          if (s.includes('"')) throw new SyntaxError('contains double quotes');
+          if (!s.includes("'")) throw new SyntaxError('no single quotes to convert');
           return tryParseJson(singleQuotedToDoubleQuoted(s));
         };
 
