@@ -1,7 +1,7 @@
 {
   "name": "llm-schema-validator",
   "version": "1.4.0",
-  "description": "Structured LLM outputs with a TypeScript field schema: parse, coerce, validate, and retry. OpenAI, Anthropic, Gemini, Ollama, and custom providers.",
+  "description": "TypeScript structured LLM outputs: JSON extraction, Zod/JSON Schema adapters, validation, retries. OpenAI (JSON mode & structured outputs), Anthropic, Google Gemini, Ollama, custom providers.",
   "sideEffects": false,
   "type": "module",
   "main": "./dist/cjs/index.js",
@@ -36,12 +36,20 @@
   "keywords": [
     "llm",
     "ai",
+    "typescript",
     "json",
+    "json-schema",
     "validation",
     "openai",
     "anthropic",
+    "claude",
+    "gemini",
+    "ollama",
+    "zod",
     "structured output",
-    "schema"
+    "structured outputs",
+    "schema",
+    "generative-ai"
   ],
   "author": "Ashwin Paul Allen",
   "license": "MIT",

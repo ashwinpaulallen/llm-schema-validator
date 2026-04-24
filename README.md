@@ -1,6 +1,6 @@
 # llm-schema-validator
 
-TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extraction, coercion, validation, and retries — works with **OpenAI**, **Anthropic**, **Google Gemini**, **Ollama** (local), and custom providers.
+TypeScript-first **structured LLM outputs** and **schema-based JSON validation** for production apps: schema-aware prompts, **JSON extraction** from free-form model text, **coercion**, **validation**, and **retries** when the model drifts. Define a compact **`Schema`**, or reuse **Zod** with **`fromZod`** or **JSON Schema draft-07** with **`fromJsonSchema`**. Works with **OpenAI** (Chat Completions, JSON mode, optional **structured outputs**), **Anthropic Claude**, **Google Gemini**, **Ollama** (local LLMs), and **`createCustomProvider`** for any HTTP or SDK backend.
 
 [![npm version](https://img.shields.io/npm/v/llm-schema-validator.svg)](https://www.npmjs.com/package/llm-schema-validator)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/ashwinpaulallen/llm-schema-validator/blob/main/LICENSE)
@@ -9,7 +9,15 @@ TypeScript-first structured outputs from LLMs: schema-aware prompts, JSON extrac
 ![TypeScript](https://img.shields.io/badge/TypeScript-First-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/node-%3E%3D20.3-339933?logo=node.js&logoColor=white)
 
-**[Features](#features)** · **[Install](#installation)** · **[Quick start](#quick-start)** · **[Examples](#examples)** · **[API](#core-api)** · **[Providers](#built-in-providers)** · **[Schema](#schema-definition-guide)**
+**[At a glance](#at-a-glance)** · **[Features](#features)** · **[Install](#installation)** · **[Quick start](#quick-start)** · **[Examples](#examples)** · **[API](#core-api)** · **[Providers](#built-in-providers)** · **[Schema](#schema-definition-guide)**
+
+---
+
+## At a glance
+
+- **What:** Get **typed, validated JSON** from LLMs via **`query()`**, a **`Schema`**, and an **`LLMProvider`** — fewer fragile `JSON.parse` paths in production.
+- **Why:** Strips markdown fences, fixes common type mismatches, validates, and **retries with validation errors** until `maxRetries`.
+- **Stack:** **Node.js ≥ 20.3**; optional peers **`openai`**, **`@anthropic-ai/sdk`**, **`zod`**; built-in **Gemini** (REST) and **Ollama** adapters without extra peers.
 
 ---
 
