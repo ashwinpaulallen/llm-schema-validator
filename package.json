@@ -1,6 +1,6 @@
 {
   "name": "llm-schema-validator",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "TypeScript structured LLM outputs: JSON extraction, Zod/JSON Schema adapters, validation, retries. OpenAI (JSON mode & structured outputs), Anthropic, Google Gemini, Ollama, custom providers.",
   "sideEffects": false,
   "type": "module",
