@@ -1,8 +1,6 @@
-import type { FieldSchema, Schema, SimpleFieldSchema, UnionFieldSchema } from './types.js';
-
-function isUnionField(field: FieldSchema): field is UnionFieldSchema {
-  return 'anyOf' in field && Array.isArray(field.anyOf);
-}
+import type { FieldSchema, Schema, SimpleFieldSchema } from './types.js';
+import { isPatternSourceDisallowed } from './regex-pattern-guard.js';
+import { isUnionField } from './validator.js';
 
 /**
  * Result of validating examples against field constraints.
@@ -31,64 +29,178 @@ function validateExampleAgainstField(
   field: SimpleFieldSchema,
   path: string,
 ): ExampleValidationError | null {
-  if (field.type !== 'string') {
-    return null;
-  }
+  switch (field.type) {
+    case 'string': {
+      if (field.enum && field.enum.length > 0) {
+        const ok = field.enum.some((v) => typeof v === 'string' && Object.is(v, example));
+        if (!ok) {
+          return {
+            field: path,
+            example,
+            reason: `Example "${example}" is not in enum: [${field.enum.map((v) => JSON.stringify(v)).join(', ')}]`,
+          };
+        }
+      }
 
-  if (field.enum && field.enum.length > 0) {
-    if (!field.enum.includes(example)) {
-      return {
-        field: path,
-        example,
-        reason: `Example "${example}" is not in enum: [${field.enum.map((v) => JSON.stringify(v)).join(', ')}]`,
-      };
-    }
-  }
-
-  if (field.const !== undefined && example !== field.const) {
-    return {
-      field: path,
-      example,
-      reason: `Example "${example}" does not match const value: ${JSON.stringify(field.const)}`,
-    };
-  }
-
-  if (typeof field.minLength === 'number' && example.length < field.minLength) {
-    return {
-      field: path,
-      example,
-      reason: `Example "${example}" is shorter than minLength ${field.minLength}`,
-    };
-  }
-
-  if (typeof field.maxLength === 'number' && example.length > field.maxLength) {
-    return {
-      field: path,
-      example,
-      reason: `Example "${example}" is longer than maxLength ${field.maxLength}`,
-    };
-  }
-
-  if (field.pattern) {
-    try {
-      const regex = new RegExp(field.pattern);
-      if (!regex.test(example)) {
+      if (field.const !== undefined && !Object.is(example, field.const)) {
         return {
           field: path,
           example,
-          reason: `Example "${example}" does not match pattern /${field.pattern}/`,
+          reason: `Example "${example}" does not match const value: ${JSON.stringify(field.const)}`,
         };
       }
-    } catch {
-      return {
-        field: path,
-        example,
-        reason: `Invalid pattern in schema: ${field.pattern}`,
-      };
-    }
-  }
 
-  return null;
+      if (typeof field.minLength === 'number' && example.length < field.minLength) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is shorter than minLength ${field.minLength}`,
+        };
+      }
+
+      if (typeof field.maxLength === 'number' && example.length > field.maxLength) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is longer than maxLength ${field.maxLength}`,
+        };
+      }
+
+      if (field.pattern) {
+        if (isPatternSourceDisallowed(field.pattern)) {
+          return {
+            field: path,
+            example,
+            reason: `Pattern is not allowed (too long or nested-quantifier ReDoS risk): ${field.pattern.slice(0, 80)}${field.pattern.length > 80 ? '…' : ''}`,
+          };
+        }
+        try {
+          const regex = new RegExp(field.pattern);
+          if (!regex.test(example)) {
+            return {
+              field: path,
+              example,
+              reason: `Example "${example}" does not match pattern /${field.pattern}/`,
+            };
+          }
+        } catch {
+          return {
+            field: path,
+            example,
+            reason: `Invalid pattern in schema: ${field.pattern}`,
+          };
+        }
+      }
+
+      return null;
+    }
+    case 'number': {
+      const trimmed = example.trim();
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is not a valid finite number`,
+        };
+      }
+
+      if (field.const !== undefined && !Object.is(n, field.const)) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" does not match const value: ${JSON.stringify(field.const)}`,
+        };
+      }
+
+      if (field.integer === true && !Number.isInteger(n)) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is not an integer`,
+        };
+      }
+
+      if (typeof field.minimum === 'number' && Number.isFinite(field.minimum) && n < field.minimum) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is below minimum ${field.minimum}`,
+        };
+      }
+
+      if (typeof field.maximum === 'number' && Number.isFinite(field.maximum) && n > field.maximum) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is above maximum ${field.maximum}`,
+        };
+      }
+
+      if (
+        typeof field.multipleOf === 'number' &&
+        Number.isFinite(field.multipleOf) &&
+        field.multipleOf > 0
+      ) {
+        const quotient = n / field.multipleOf;
+        const tolerance = 1e-10;
+        if (Math.abs(quotient - Math.round(quotient)) >= tolerance) {
+          return {
+            field: path,
+            example,
+            reason: `Example "${example}" is not a multiple of ${field.multipleOf}`,
+          };
+        }
+      }
+
+      if (field.enum && field.enum.length > 0) {
+        const ok = field.enum.some((v) => typeof v === 'number' && Object.is(v, n));
+        if (!ok) {
+          return {
+            field: path,
+            example,
+            reason: `Example "${example}" is not in enum: [${field.enum.map((v) => JSON.stringify(v)).join(', ')}]`,
+          };
+        }
+      }
+
+      return null;
+    }
+    case 'boolean': {
+      const t = example.trim().toLowerCase();
+      if (t !== 'true' && t !== 'false') {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" is not a valid boolean (use true or false)`,
+        };
+      }
+      const b = t === 'true';
+
+      if (field.const !== undefined && !Object.is(b, field.const)) {
+        return {
+          field: path,
+          example,
+          reason: `Example "${example}" does not match const value: ${JSON.stringify(field.const)}`,
+        };
+      }
+
+      if (field.enum && field.enum.length > 0) {
+        const ok = field.enum.some((v) => typeof v === 'boolean' && Object.is(v, b));
+        if (!ok) {
+          return {
+            field: path,
+            example,
+            reason: `Example "${example}" is not in enum: [${field.enum.map((v) => JSON.stringify(v)).join(', ')}]`,
+          };
+        }
+      }
+
+      return null;
+    }
+    default:
+      return null;
+  }
 }
 
 function validateFieldExamples(
@@ -166,10 +278,9 @@ function validateSchemaExamplesInternal(
  *
  * @remarks
  * This validates:
- * - String examples match `enum` values (if defined)
- * - String examples match `const` value (if defined)
- * - String examples satisfy `minLength`/`maxLength`
- * - String examples match `pattern` regex
+ * - String examples: `enum`, `const`, `minLength`/`maxLength`, `pattern`
+ * - Number examples: parse as finite number; `enum`, `const`, `integer`, `minimum`/`maximum`, `multipleOf`
+ * - Boolean examples: `true`/`false` (case-insensitive); `enum`, `const`
  * - Union field examples match at least one branch
  */
 export function validateExamples(schema: Schema): ExampleValidationResult {

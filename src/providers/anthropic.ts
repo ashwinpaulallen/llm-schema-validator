@@ -16,6 +16,11 @@ type AnthropicModule = Record<string, unknown> & {
 
 let moduleCache: AnthropicModule | null = null;
 
+/** Clears the cached dynamic `import('@anthropic-ai/sdk')` result (test isolation, hot reload). */
+export function clearAnthropicModuleCache(): void {
+  moduleCache = null;
+}
+
 async function loadAnthropicModule(): Promise<AnthropicModule> {
   if (moduleCache) return moduleCache;
   try {

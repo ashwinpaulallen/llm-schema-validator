@@ -1,9 +1,11 @@
 import { combineSignals, delayWithAbort, raceWithSignal } from './abort.js';
 import {
   LOG_PREFIX,
+  MAX_DEBUG_RAW_RESPONSE_PREVIEW,
   MAX_FINAL_ERROR_RAW_LENGTH,
   MAX_PARSE_ERROR_RAW_LENGTH,
 } from './constants.js';
+import { mergeErrorTemplates } from './error-messages.js';
 import { QueryRetriesExhaustedError, ProviderError } from './errors.js';
 import { coerce, coerceRootArray } from './coercer.js';
 import { buildInitialPrompt, buildRetryPrompt, type RootPromptShape } from './prompt-builder.js';
@@ -23,12 +25,13 @@ import type {
   Schema,
   ValidationError,
 } from './types.js';
-import { isPlainObject, mergeCompletionUsage, normalizeCompletionResult, toLabel } from './utils.js';
+import { isPlainObject, mergeCompletionUsage, normalizeCompletionResult, toLabel, truncate } from './utils.js';
 import { validate, validateRootArray } from './validator.js';
 
 function validateDependentRequired(
   data: Record<string, unknown>,
   dependentRequired: DependentRequired | undefined,
+  m: ReturnType<typeof mergeErrorTemplates>,
 ): ValidationError[] {
   if (!dependentRequired) return [];
   const errors: ValidationError[] = [];
@@ -48,7 +51,7 @@ function validateDependentRequired(
           field: reqField,
           expected: `required (when "${triggerField}" is present)`,
           received: toLabel(data[reqField]),
-          message: `[llm-schema-validator] Field "${reqField}" is required when "${triggerField}" is present`,
+          message: m.dependentRequired(reqField, triggerField),
         });
       }
     }
@@ -317,7 +320,10 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
   const queryT0 = Date.now();
   const maxAttempts = Math.max(1, options.maxRetries ?? 3);
   const coerceEnabled = options.coerce ?? true;
+  /** Merged templates for validation + dependentRequired (same as {@link mergeErrorTemplates}(options.errorMessages)). */
+  const validationMessages = mergeErrorTemplates(options.errorMessages);
   const fallbackToPartial = options.fallbackToPartial ?? false;
+  const logFullRawResponses = options.logFullRawResponses === true;
   const log = createDiagLog(options);
   const retryDelayBase =
     options.retryDelayMs !== undefined && options.retryDelayMs > 0 ? options.retryDelayMs : undefined;
@@ -432,7 +438,16 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
 
     lastRaw = raw;
-    log('debug', 'raw response:', raw);
+    if (logFullRawResponses) {
+      log('debug', 'raw response:', raw);
+    } else {
+      const preview = truncate(raw, MAX_DEBUG_RAW_RESPONSE_PREVIEW);
+      const note =
+        raw.length > MAX_DEBUG_RAW_RESPONSE_PREVIEW
+          ? ` (${raw.length} chars total; truncated for logs — set logFullRawResponses: true for full text; may include secrets)`
+          : '';
+      log('debug', `raw response${note}:`, preview);
+    }
 
     let parsed: unknown;
     try {
@@ -503,7 +518,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       }
       lastCoerced = data;
 
-      let validationErrors = validateRootArray(data, arraySchema!);
+      let validationErrors = validateRootArray(data, arraySchema!, validationMessages);
       const arrayOpts = options as QueryArrayOptions<ArrayRootFieldSchema>;
       if (validationErrors.length === 0 && arrayOpts.validate) {
         validationErrors = runQueryLevelValidate(() => arrayOpts.validate!(data));
@@ -530,7 +545,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
           data: data as T,
           success: true,
           attempts: attempt,
-          errors: [],
+          errors: [] as const,
           durationMs,
           ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
         };
@@ -589,9 +604,9 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
     }
     lastCoerced = data;
 
-    let validationErrors = validate(data, objectSchema);
+    let validationErrors = validate(data, objectSchema, validationMessages);
     if (validationErrors.length === 0 && objectOpts.dependentRequired) {
-      validationErrors = validateDependentRequired(data, objectOpts.dependentRequired);
+      validationErrors = validateDependentRequired(data, objectOpts.dependentRequired, validationMessages);
     }
     if (validationErrors.length === 0 && objectOpts.validate) {
       validationErrors = runQueryLevelValidate(() => objectOpts.validate!(data));
@@ -618,7 +633,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
         data: data as T,
         success: true,
         attempts: attempt,
-        errors: [],
+        errors: [] as const,
         durationMs,
         ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
       };
@@ -653,7 +668,7 @@ export async function executeWithRetry<T>(options: QueryOptions): Promise<QueryR
       ...(cumulativeUsage ? { usage: cumulativeUsage } : {}),
     });
     return {
-      data: lastCoerced as T,
+      partialData: lastCoerced as T,
       success: false,
       attempts: maxAttempts,
       errors: allErrors,

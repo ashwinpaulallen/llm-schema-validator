@@ -27,8 +27,8 @@ function decodePointerToken(s: string): string {
   return s.replace(/~1/g, '/').replace(/~0/g, '~');
 }
 
-/** Resolve `#/definitions/Name` or `#/$defs/Name` (draft-07) against the root document. */
-function resolveLocalRef(ref: string, root: RootDoc): JSONSchema7 {
+/** Single hop: resolve `#/definitions/Name` or `#/$defs/Name` (draft-07) against the root document. */
+function derefLocalRef(ref: string, root: RootDoc): JSONSchema7 {
   if (!ref.startsWith('#')) {
     throw new JsonSchemaAdapterError(`only same-document refs are supported (got ${JSON.stringify(ref)})`);
   }
@@ -51,6 +51,25 @@ function resolveLocalRef(ref: string, root: RootDoc): JSONSchema7 {
     throw new JsonSchemaAdapterError(`$ref ${ref} did not resolve to an object schema`);
   }
   return cur as JSONSchema7;
+}
+
+const MAX_REF_CHAIN = 256;
+
+/** Follow a chain of same-document `$ref` until a concrete schema; detect cycles with `refChain`. */
+function followLocalRefs(node: JSONSchema7, root: RootDoc, refChain: Set<string>): JSONSchema7 {
+  let n = node;
+  for (let i = 0; i < MAX_REF_CHAIN; i++) {
+    const ref = n.$ref;
+    if (ref === undefined) {
+      return n;
+    }
+    if (refChain.has(ref)) {
+      throw new JsonSchemaAdapterError(`circular $ref: ${ref}`);
+    }
+    refChain.add(ref);
+    n = derefLocalRef(ref, root);
+  }
+  throw new JsonSchemaAdapterError(`$ref chain exceeded maximum length (${MAX_REF_CHAIN})`);
 }
 
 function parseTypeKeyword(
@@ -118,10 +137,7 @@ function jsonSchemaToFieldBody(
     throw new JsonSchemaAdapterError('schema nesting is too deep');
   }
 
-  let n: JSONSchema7 = node;
-  if (node.$ref) {
-    n = resolveLocalRef(node.$ref, root);
-  }
+  const n: JSONSchema7 = followLocalRefs(node, root, new Set());
 
   if (n.if !== undefined || n.then !== undefined || n.else !== undefined) {
     throw new JsonSchemaAdapterError('if/then/else is not supported');
@@ -204,6 +220,13 @@ function jsonSchemaToFieldBody(
     const body: FieldBody = { type: 'number' };
     if (typeof n.minimum === 'number') body.minimum = n.minimum;
     if (typeof n.maximum === 'number') body.maximum = n.maximum;
+    if (
+      typeof n.multipleOf === 'number' &&
+      Number.isFinite(n.multipleOf) &&
+      n.multipleOf > 0
+    ) {
+      body.multipleOf = n.multipleOf;
+    }
     if (single === 'integer') {
       body.integer = true;
     }
@@ -303,7 +326,7 @@ function unwrapDefinition(def: JSONSchema7Definition, root: RootDoc): JSONSchema
     throw new JsonSchemaAdapterError('schema false is not supported here');
   }
   if (def.$ref) {
-    return resolveLocalRef(def.$ref, root);
+    return followLocalRefs(def as JSONSchema7, root, new Set());
   }
   return def;
 }
@@ -364,11 +387,12 @@ function convertProperty(
  * for use with {@link query}, {@link validate}, etc.
  *
  * Supported: `properties`, `required`, string/number/integer/boolean/object/array types, `enum`, `const`,
- * `anyOf` / `oneOf`, `format` (email, uri, date), string length, `pattern`, number min/max,
+ * `anyOf` / `oneOf`, `format` (email, uri, date), string length, `pattern`, number min/max, `multipleOf`,
  * `exclusiveMinimum` / `exclusiveMaximum` (as extra validation), arrays of primitives or objects,
  * and same-document `$ref` to `#/definitions/...` or `#/$defs/...`.
  *
- * Not supported: `allOf`, `not`, `if`/`then`/`else`, tuple `items`, external `$ref`, `patternProperties`, etc.
+ * Not supported: `allOf`, `not`, `if`/`then`/`else`, tuple `items`, external `$ref`, circular same-document `$ref`,
+ * `patternProperties`, etc.
  *
  * @remarks
  * For full TypeScript type inference on the `input` parameter, install `@types/json-schema` as a dev

@@ -69,6 +69,9 @@ export interface SimpleFieldSchema extends FieldSchemaBase {
   /**
    * ECMAScript regular expression pattern (no delimiters), e.g. `^\\d{5}$` for US ZIP.
    * Invalid patterns fail validation for that field at runtime.
+   *
+   * **Security:** Very long sources and some nested-quantifier shapes are **rejected** (treated like invalid patterns)
+   * to reduce ReDoS risk when schemas come from untrusted input. This is heuristic, not a full linear-time guarantee.
    */
   pattern?: string;
   /** Minimum array length (after parsing as array). */
@@ -269,6 +272,8 @@ export interface ErrorMessageTemplates {
   typeMismatch?: (field: string, expected: string, received: string) => string;
   /** String does not match pattern. */
   patternMismatch?: (field: string, pattern: string) => string;
+  /** The field's schema `pattern` is not a valid regular expression. */
+  invalidSchemaPattern?: (field: string, pattern: string) => string;
   /** String is too short. */
   minLength?: (field: string, minLength: number, actualLength: number) => string;
   /** String is too long. */
@@ -300,7 +305,7 @@ export interface ErrorMessageTemplates {
 }
 
 /**
- * Summary passed to {@link QueryOptionsBase.onComplete} — mirrors {@link QueryResult} fields except **`data`**.
+ * Summary passed to {@link QueryOptionsBase.onComplete} — mirrors {@link QueryResult} outcome fields only (omits **`data`** and **`partialData`**).
  */
 export interface QueryCompletionSummary {
   success: boolean;
@@ -342,7 +347,11 @@ export interface QueryOptionsBase {
   retryBackoffMultiplier?: number;
   /** @default true */
   coerce?: boolean;
-  /** @default false */
+  /**
+   * @default false
+   * When `true` and every attempt fails validation but a root object/array was parsed (and coerced),
+   * {@link query} returns {@link QueryPartialFailureResult} with **`partialData`** instead of throwing.
+   */
   fallbackToPartial?: boolean;
   /**
    * Minimum diagnostic verbosity. **`silent`** by default unless **`debug: true`**, a **`logger`** is set, or **`logLevel`** is set explicitly.
@@ -367,6 +376,12 @@ export interface QueryOptionsBase {
    */
   logger?: QueryLogger;
   /**
+   * When **`true`** and effective log level is **`debug`**, log the **full** raw model text after each **`complete()`**.
+   * **Default `false`:** only a short preview is logged so echoed secrets / PII in model output do not fill logs.
+   * Enable only in trusted dev environments.
+   */
+  logFullRawResponses?: boolean;
+  /**
    * Called after each **`provider.complete()`** finishes: **`attempt`** is 1-based; **`errors`** is empty on success,
    * otherwise human-readable messages for that attempt only (no `Attempt N:` prefix — use **`attempt`** for indexing).
    * **`meta`** is optional in the type so **`(attempt, errors) => …`** handlers stay assignable; the library **always** passes **`meta`** with **`durationMs`** (wall-clock for that attempt after any inter-attempt backoff, until this callback).
@@ -374,7 +389,7 @@ export interface QueryOptionsBase {
   onAttempt?: (attempt: number, errors: string[], meta?: QueryAttemptMeta) => void;
   /**
    * Called once when the `query` finishes: **success**, **validation exhausted**, or **provider failure**
-   * (same shape as assembling from {@link QueryResult}, without `data`). Use for metrics without wrapping every call in try/catch.
+   * (same shape as assembling from {@link QueryResult}, without **`data`** / **`partialData`**). Use for metrics without wrapping every call in try/catch.
    */
   onComplete?: (summary: QueryCompletionSummary) => void;
   /**
@@ -390,6 +405,7 @@ export interface QueryOptionsBase {
   /**
    * Called immediately after `provider.complete()` returns (success or failure).
    * Receives the raw response text (if successful) or undefined (if failed), plus timing info.
+   * **Security:** `rawText` may contain secrets if the model echoed prompt or context — avoid persisting it.
    */
   onProviderEnd?: (attempt: number, durationMs: number, rawText: string | undefined) => void;
   /**
@@ -506,12 +522,15 @@ export type QueryOptions<S extends Schema = Schema> =
   | QueryObjectOptions<S>
   | QueryArrayOptions<ArrayRootFieldSchema>;
 
-/** Result of validating and parsing an LLM response against a schema. */
-export interface QueryResult<T> {
+/**
+ * Successful {@link query}: **`data`** satisfies the schema (and optional cross-field **`validate`**).
+ */
+export type QuerySuccessResult<T> = {
+  success: true;
   data: T;
-  success: boolean;
   attempts: number;
-  errors: string[];
+  /** Always empty; present so **`success`** discriminates {@link QueryResult}. */
+  errors: readonly [];
   /**
    * Total wall-clock time for this `query` in milliseconds (setup, all `complete()` calls, parsing/validation, and inter-attempt backoff).
    */
@@ -521,6 +540,27 @@ export interface QueryResult<T> {
    * when the provider reported usage. Omitted if no attempt returned usage data.
    */
   usage?: CompletionUsage;
+};
+
+/**
+ * Returned only when {@link QueryOptionsBase.fallbackToPartial} is `true` and no attempt passed validation.
+ * **`partialData`** is the last parsed/coerced root value — it is **not** guaranteed to match **`schema`**.
+ */
+export type QueryPartialFailureResult<T> = {
+  success: false;
+  partialData: T;
+  attempts: number;
+  errors: string[];
+  durationMs: number;
+  usage?: CompletionUsage;
+};
+
+/** Result of validating and parsing an LLM response against a schema (discriminated by **`success`**). */
+export type QueryResult<T> = QuerySuccessResult<T> | QueryPartialFailureResult<T>;
+
+/** Type guard: narrows {@link QueryResult} to {@link QuerySuccessResult} when **`success`** is `true`. */
+export function isQuerySuccess<T>(result: QueryResult<T>): result is QuerySuccessResult<T> {
+  return result.success === true;
 }
 
 /** A single validation failure against the expected schema. */

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { IPV4_REGEX, IPV6_REGEX } from './ip-address-regex.js';
 import type {
   AnyOfBranchSchema,
   FieldSchema,
@@ -110,6 +111,23 @@ function zodStringToBody(inner: ZodTypeAny): FieldBody {
     if (c.kind === 'email') (body as { format?: 'email' }).format = 'email';
     if (c.kind === 'url') (body as { format?: 'url' }).format = 'url';
     if (c.kind === 'date') (body as { format?: 'date' }).format = 'date';
+    if (c.kind === 'datetime') (body as { format?: 'datetime' }).format = 'datetime';
+    if (c.kind === 'time') (body as { format?: 'time' }).format = 'time';
+    if (c.kind === 'uuid') (body as { format?: 'uuid' }).format = 'uuid';
+    if (c.kind === 'ip') {
+      const version = (c as { version?: 'v4' | 'v6' }).version;
+      if (version === 'v4') (body as { format?: 'ipv4' }).format = 'ipv4';
+      else if (version === 'v6') (body as { format?: 'ipv6' }).format = 'ipv6';
+      else {
+        const withV = body as FieldBody & { validate?: (v: unknown) => string | null };
+        const prev = withV.validate;
+        withV.validate = (v: unknown) => {
+          if (typeof v !== 'string') return 'must be a string';
+          if (!IPV4_REGEX.test(v) && !IPV6_REGEX.test(v)) return 'must be a valid IPv4 or IPv6 address';
+          return prev ? prev(v) : null;
+        };
+      }
+    }
     if (c.kind === 'regex' && c.regex) (body as { pattern?: string }).pattern = c.regex.source;
   }
 
@@ -121,12 +139,48 @@ function zodNumberToBody(inner: ZodTypeAny): FieldBody {
     []) as { kind: string; inclusive?: boolean; value?: number }[];
 
   const body: FieldBody = { type: 'number' };
+  const exclusive: ((v: unknown) => string | null)[] = [];
 
   for (const c of checks) {
-    if (c.kind === 'min' && typeof c.value === 'number') (body as { minimum?: number }).minimum = c.value;
-    if (c.kind === 'max' && typeof c.value === 'number') (body as { maximum?: number }).maximum = c.value;
+    if (c.kind === 'min' && typeof c.value === 'number') {
+      if (c.inclusive === false) {
+        const em = c.value;
+        exclusive.push((v) =>
+          typeof v === 'number' && Number.isFinite(v) && v > em
+            ? null
+            : `must be strictly greater than ${em}`,
+        );
+      } else {
+        (body as { minimum?: number }).minimum = c.value;
+      }
+    }
+    if (c.kind === 'max' && typeof c.value === 'number') {
+      if (c.inclusive === false) {
+        const ex = c.value;
+        exclusive.push((v) =>
+          typeof v === 'number' && Number.isFinite(v) && v < ex
+            ? null
+            : `must be strictly less than ${ex}`,
+        );
+      } else {
+        (body as { maximum?: number }).maximum = c.value;
+      }
+    }
     if (c.kind === 'int') (body as { integer?: boolean }).integer = true;
   }
+
+  if (exclusive.length > 0) {
+    const withVal = body as FieldBody & { validate?: (value: unknown) => string | null };
+    const prev = withVal.validate;
+    withVal.validate = (value: unknown) => {
+      for (const fn of exclusive) {
+        const msg = fn(value);
+        if (msg !== null) return msg;
+      }
+      return prev ? prev(value) : null;
+    };
+  }
+
   return body;
 }
 
@@ -166,13 +220,17 @@ function zodArrayToBody(arr: ZodTypeAny, element: ZodTypeAny): FieldBody {
   return base;
 }
 
+function zodUnionOptions(inner: ZodTypeAny): ZodTypeAny[] {
+  const raw = (inner._def as { options?: ZodTypeAny[] | Map<unknown, ZodTypeAny> }).options;
+  if (raw === undefined) return [];
+  if (Array.isArray(raw)) return raw;
+  if (raw instanceof Map) return [...raw.values()];
+  return [];
+}
+
 function mapUnionToAnyOf(inner: ZodTypeAny): UnionFieldSchema['anyOf'] {
-  const tn = getTypeName(inner);
-  const options =
-    tn === 'ZodDiscriminatedUnion'
-      ? (inner._def as { options: ZodTypeAny[] }).options
-      : (inner._def as { options: ZodTypeAny[] }).options;
-  if (!options?.length) {
+  const options = zodUnionOptions(inner);
+  if (options.length === 0) {
     throw new ZodAdapterError('empty Zod union');
   }
   return options.map((opt) => zodInnerToAnyOfBranch(opt));

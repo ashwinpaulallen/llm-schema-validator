@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { coerce, defineSchema, query, validate } from '../src/index.js';
+import { coerce, defineSchema, isQuerySuccess, query, validate } from '../src/index.js';
 
 describe('standalone exports', () => {
   it('exports validate and coerce from the package root', () => {
@@ -36,6 +36,7 @@ describe('query', () => {
       maxRetries: 1,
     });
     expect(result.success).toBe(true);
+    expect(isQuerySuccess(result)).toBe(true);
     expect(result.data.x).toBe(99);
   });
 
