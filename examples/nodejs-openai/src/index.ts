@@ -36,7 +36,7 @@ function logResult(label: string, r: QueryResult<unknown>): void {
         durationMs: r.durationMs,
         usage: r.usage ?? null,
         errors: r.errors,
-        data: r.data,
+        data: r.success ? r.data : r.partialData,
       },
       null,
       2,

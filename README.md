@@ -43,6 +43,7 @@ You call **`query()`** with a prompt, a **`Schema`** (see below), and an **`LLMP
 - **`defineSchema()`** — Typed helper so schema objects stay autocomplete-friendly.
 - **Adapters** — **`fromZod(z.object(…))`** and **`fromJsonSchema({ type: 'object', … })`** to reuse Zod or JSON Schema (draft-07) definitions as a **`Schema`**.
 - **Built-in providers** — **`createOpenAIProvider`** (Chat Completions, optional **streaming** and **structured JSON Schema outputs**), **`createAnthropicProvider`** (Messages API), **`createGeminiProvider`** (Gemini REST), **`createOllamaProvider`** (local Ollama), **`createCustomProvider`**; **`QueryResult.usage`** aggregates **prompt / completion / total tokens** when the provider reports them; **`QueryResult.durationMs`** reports total wall-clock latency.
+- **`query()` and streaming** — **`query()` always calls `provider.complete()`** (one full response per attempt). It does **not** use **`stream()`**, even if the provider supports **`StreamingLLMProvider`**. Use **`stream()`** yourself when you need token-by-token output; use **`complete()`** (default) with **`query()`**.
 - **Object or array root** — Default top-level JSON object, or **`rootType: 'array'`** with **`arraySchema`** for a list-shaped response.
 - **`anyOf` unions** — A field can list multiple alternatives (`string` **or** `number`, etc.); coercion tries branches **in order**.
 - **`const` literals** — Exact value match per field (discriminated unions, fixed `kind` strings).
@@ -162,10 +163,10 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 | `validateExamples`, `ExampleValidationResult`, `ExampleValidationError` | Check that **`examples`** on fields satisfy **`enum`** / **`const`** / length / **`pattern`**. |
 | `defaultErrorMessages`, `createErrorMessageGenerator`, `ErrorMessageGenerator` | Default and merged **`ErrorMessageTemplates`** for **`query({ errorMessages: … })`**. |
 | `detectRuntime`, `checkRuntimeCompatibility`, `assertRuntimeCompatible`, `RuntimeEnvironment`, `RuntimeCompatibility` | Best-effort runtime detection (Node, Deno, Bun, Workers, browser). |
-| `createOpenAIProvider`, `OpenAIProviderOptions`, `OpenAIStructuredOutputsConfig`, `createAnthropicProvider`, `CreateAnthropicProviderOptions`, `createGeminiProvider`, `GeminiProviderOptions`, `createOllamaProvider`, `OllamaProviderOptions`, `createCustomProvider` | Ready-made **`LLMProvider`** / **`StreamingLLMProvider`** factories and option types. |
+| `createOpenAIProvider`, `clearOpenAIModuleCache`, `OpenAIProviderOptions`, `OpenAIStructuredOutputsConfig`, `createAnthropicProvider`, `clearAnthropicModuleCache`, `CreateAnthropicProviderOptions`, `createGeminiProvider`, `GeminiProviderOptions`, `createOllamaProvider`, `OllamaProviderOptions`, `createCustomProvider` | Ready-made **`LLMProvider`** / **`StreamingLLMProvider`** factories and option types. **`clear*ModuleCache`** drops cached SDK dynamic imports (tests / hot reload). |
 | `StreamingLLMProvider`, `StreamChunk`, `isStreamingProvider` | Streaming adapters (e.g. OpenAI with **`stream: true`**). |
 | `InferSchema`, `InferFieldValue` | Map a schema definition to a TypeScript shape (used by `query` automatically). |
-| `LLMProvider`, `CompleteOptions`, `LLMProviderCompleteResult`, `LLMCompletion`, `CompletionUsage`, `Schema`, `FieldSchema`, `FewShotExample`, `PromptTemplateContext`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QueryCompletionSummary`, `QueryAttemptMeta`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
+| `LLMProvider`, `CompleteOptions`, `LLMProviderCompleteResult`, `LLMCompletion`, `CompletionUsage`, `Schema`, `FieldSchema`, `FewShotExample`, `PromptTemplateContext`, `QueryOptions`, `QueryOptionsBase`, `QueryObjectOptions`, `QueryArrayOptions`, `QueryResult`, `QuerySuccessResult`, `QueryPartialFailureResult`, `isQuerySuccess`, `QueryCompletionSummary`, `QueryAttemptMeta`, `QueryLogger`, `ValidationError`, `CreateAnthropicProviderOptions` | TypeScript types. |
 | `JSONExtractionError`, `ProviderError`, `QueryRetriesExhaustedError`, `ZodAdapterError`, `JsonSchemaAdapterError` | Error classes (see [Errors](#errors-and-exceptions)). |
 
 **ESM and CommonJS** — The build emits **ESM** under `dist/` (`import` / `"module"`) and **CommonJS** under `dist/cjs/` (`require` / `"main"`). The package root sets `"type": "module"`; `dist/cjs/package.json` sets `"type": "commonjs"` so Node resolves `require('llm-schema-validator')` to the CJS build. Use `import` from the same package name in ESM projects.
@@ -176,10 +177,12 @@ These projects are in the **[GitHub repository](https://github.com/ashwinpaulall
 
 ### `query(options): Promise<QueryResult<…>>`
 
-Runs the full pipeline.
+Runs the full pipeline. It **only** uses **`provider.complete()`** (not **`stream()`**); see [Built-in providers](#built-in-providers) for streaming vs **`query()`**.
 
-- **Object root (default):** pass **`schema`**. **`QueryResult.data`** is **`InferSchema<S>`** where **`S`** is your schema. Use **`defineSchema({ ... })`** so field `type` values stay string literals (`'string'`, `'number'`, …); otherwise TypeScript may widen types and inference weakens.
-- **Array root:** set **`rootType: 'array'`** and **`arraySchema`** with **`type: 'array'`** (plus `itemType` / `itemProperties`, etc.). **`QueryResult.data`** is **`InferFieldValue<typeof arraySchema>`** (the array of elements).
+- **Object root (default):** pass **`schema`**. On success, **`QuerySuccessResult.data`** is **`InferSchema<S>`** where **`S`** is your schema. Use **`defineSchema({ ... })`** so field `type` values stay string literals (`'string'`, `'number'`, …); otherwise TypeScript may widen types and inference weakens.
+- **Array root:** set **`rootType: 'array'`** and **`arraySchema`** with **`type: 'array'`** (plus `itemType` / `itemProperties`, etc.). On success, **`data`** is **`InferFieldValue<typeof arraySchema>`** (the array of elements).
+
+**`QueryResult<T>`** is a discriminated union: **`success: true`** → validated **`data`**; **`success: false`** with **`fallbackToPartial: true`** → **`partialData`** (same **`T`** at the type level, but **not** validated — use **`isQuerySuccess()`** or check **`success`** before treating the payload as schema-valid).
 
 You can still annotate manually when needed: `InferSchema<typeof mySchema>`, **`InferFieldValue<typeof arraySchema>`**, or `QueryResult<…>` via assertion.
 
@@ -210,12 +213,13 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 | `retryDelayMs` | `number?` | **Default: none (immediate retries).** Base wait before each retry after a failed attempt; use with `retryBackoffMultiplier` for exponential backoff (see [Retries](#retries)). |
 | `retryBackoffMultiplier` | `number?` | **Default `2`** when `retryDelayMs` is set. Per-retry multiplier (`1` = fixed delay every time). |
 | `coerce` | `boolean?` | **Default `true`.** Coerce common mismatches before validation (see [Coercion](#coercion)). |
-| `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail validation but a root **object** or **array** was parsed and coerced, return that value with `success: false` instead of throwing. |
+| `fallbackToPartial` | `boolean?` | **Default `false`.** If all attempts fail validation but a root **object** or **array** was parsed and coerced, return **`{ success: false, partialData, errors, … }`** instead of throwing. **`partialData`** is not schema-validated (see **`QueryPartialFailureResult`**). |
 | `logLevel` | `QueryLogLevel?` | **Default:** `silent` unless `debug: true`, a **`logger`** is set, or you set this explicitly. **`error` ≤ `warn` ≤ `info` ≤ `debug`** — e.g. **`info`** logs attempts and outcomes, not raw model text (**`debug`**). Takes precedence over **`debug`**. |
 | `debug` | `boolean?` | **Deprecated.** Prefer **`logLevel: 'debug'`**. When `true` and `logLevel` is omitted, diagnostics use full **`debug`** verbosity. |
 | `logger` | `QueryLogger?` | Prefer **`logger.log(level, message, …args)`** for level-aware routing; otherwise **`logger.debug(message, …)`** receives all emitted lines. If omitted, messages go to **`console.error` / `warn` / `info` / `debug`** by level. |
+| `logFullRawResponses` | `boolean?` | **Default `false`.** When **`true`** and level is **`debug`**, log the **full** model response each attempt. Otherwise only a truncated preview is logged (see [Security considerations](#security-considerations)). |
 | `onAttempt` | `(attempt, errors, meta?) => void?` | After each finished **`complete()`** for that attempt: **`attempt`** is 1-based; **`errors`** is empty on success. **`meta.durationMs`** (optional in the type, always passed at runtime) is per-attempt wall-clock time after any backoff before that attempt. |
-| `onComplete` | `(summary: QueryCompletionSummary) => void?` | Once when the query **terminates**: same fields as **`QueryResult`** except **`data`** — **`success`**, **`attempts`**, **`durationMs`**, **`errors`**, **`usage`**. Runs on success, **`fallbackToPartial`**, **`QueryRetriesExhaustedError`**, and **`ProviderError`**. |
+| `onComplete` | `(summary: QueryCompletionSummary) => void?` | Once when the query **terminates**: **`success`**, **`attempts`**, **`durationMs`**, **`errors`**, **`usage`** (no **`data`** / **`partialData`**). Runs on success, **`fallbackToPartial`**, **`QueryRetriesExhaustedError`**, and **`ProviderError`**. |
 | `dependentRequired` | `Record<string, readonly string[]>?` | **Object root only.** If a **trigger** key is present, the listed fields are required (e.g. `{ creditCard: ['billingAddress'] }`). |
 | `onPromptBuilt` | `(prompt, attempt) => void?` | After the user message is fully built, before **`complete()`**. |
 | `onProviderStart` | `(attempt) => void?` | Immediately before **`provider.complete()`**. |
@@ -231,14 +235,31 @@ Use these when you already have parsed JSON (from your own pipeline or another l
 
 ### `QueryResult<T>`
 
+Discriminated by **`success`**:
+
+**`QuerySuccessResult<T>`** (`success: true`)
+
 | Field | Type | Description |
 |--------|------|-------------|
-| `data` | `T` | When `success: true`, the validated root value (object or array). When `success: false` with `fallbackToPartial: true`, the last coerced root value (still failing validation). |
-| `success` | `boolean` | `true` if validation passed on some attempt. |
+| `data` | `T` | Validated root object or array. |
+| `success` | `true` | |
 | `attempts` | `number` | How many `complete` calls were made. |
-| `errors` | `string[]` | Human-readable messages for failed attempts; empty when `success` is `true`. |
-| `durationMs` | `number` | Total wall-clock time for this `query` (setup, every attempt, parsing/validation, and inter-attempt backoff). |
-| `usage` | `CompletionUsage?` | **Aggregated** `promptTokens`, `completionTokens`, `totalTokens` across every `complete()` in this `query` (including retries), when reported. Omitted if no attempt returned usage. |
+| `errors` | `readonly []` | Always empty (narrows the union). |
+| `durationMs` | `number` | Total wall-clock time for this `query`. |
+| `usage` | `CompletionUsage?` | Aggregated usage when reported. |
+
+**`QueryPartialFailureResult<T>`** (`success: false`, only when **`fallbackToPartial: true`**)
+
+| Field | Type | Description |
+|--------|------|-------------|
+| `partialData` | `T` | Last parsed/coerced root value; **not** guaranteed to satisfy **`schema`**. |
+| `success` | `false` | |
+| `attempts` | `number` | How many `complete` calls were made. |
+| `errors` | `string[]` | Human-readable messages for failed attempts. |
+| `durationMs` | `number` | Total wall-clock time for this `query`. |
+| `usage` | `CompletionUsage?` | Aggregated usage when reported. |
+
+Use **`isQuerySuccess(result)`** to narrow to **`QuerySuccessResult`** in TypeScript.
 
 ### `FieldSchema`
 
@@ -272,6 +293,11 @@ By default the root value must be a **plain object** (not a bare array or primit
 
 ---
 
+## Security considerations
+
+- **`logLevel: 'debug'`** — By default only a **short preview** of each model response is logged (`logFullRawResponses` defaults to off). Full raw text can echo **secrets or PII** from your prompt or RAG context; enable **`logFullRawResponses: true`** only in trusted dev setups. **`onProviderEnd`** receives the full `rawText` — treat it as sensitive.
+- **`FieldSchema.pattern`** — Patterns are compiled with the built-in `RegExp` engine. The library **rejects** overly long sources and some **nested-quantifier** shapes common in ReDoS; that is **heuristic**, not a proof of safety. Do not accept arbitrary regex strings from untrusted users without review.
+
 ## Errors and exceptions
 
 | Error | When |
@@ -303,7 +329,7 @@ await query({
 ```
 
 - **`createOpenAIProvider(apiKey, model?, options?)`** — Default model: **`gpt-4o`**. **`response_format: { type: 'json_object' }`** is applied by default (OpenAI JSON mode) to reduce invalid JSON; override with **`response_format: { type: 'text' }`** if the model does not support JSON mode. Other **`options`** fields: **`temperature`**, **`top_p`**, **`seed`**, **`response_format`** (or pass **`options` alone as the second argument**). Maps Chat Completions **`usage`** (`prompt_tokens`, `completion_tokens`, `total_tokens`) into **`CompletionUsage`** for **`query()`** aggregation.
-- **`stream: true`** — Returns a **`StreamingLLMProvider`**: call **`stream(prompt, init?)`** for async chunks (**`StreamChunk`**: **`text`**, **`done`**, optional **`usage`** on the final chunk). **`complete()`** still works on the same object.
+- **`stream: true`** — Returns a **`StreamingLLMProvider`**: call **`stream(prompt, init?)`** for async chunks (**`StreamChunk`**: **`text`**, **`done`**, optional **`usage`** on the final chunk). **`complete()`** still works on the same object. **`query()`** does not call **`stream()`**; it always uses **`complete()`** (see [top-level features](#core-api)).
 - **`structuredOutputs: { schema, name?, skipValidation?, strict? }`** — Uses OpenAI **structured outputs** (**`response_format.type: 'json_schema'`**) with a JSON Schema derived from your **`Schema`** via **`toJsonSchema()`**. When **`skipValidation: true`**, you may rely on the model’s guarantee (still parse in **`query`** as usual unless you add your own shortcut).
 
 ### Anthropic (Messages API)
@@ -346,7 +372,7 @@ await query({
 });
 ```
 
-- **`createGeminiProvider(apiKey, options?)`** — Uses **`fetch`** against **`generativelanguage.googleapis.com`** (no **`@google/generative-ai`** peer dependency). API key is sent as **`x-goog-api-key`**. Optional **`stream: true`** for **`StreamingLLMProvider`**. **`jsonMode`** (default **`true`**) sets **`application/json`** response MIME type.
+- **`createGeminiProvider(apiKey, options?)`** — Uses **`fetch`** against **`generativelanguage.googleapis.com`** (no **`@google/generative-ai`** peer dependency). API key is sent as **`x-goog-api-key`**. Optional **`stream: true`** for **`StreamingLLMProvider`** (for your own **`stream()`** calls; **`query()`** still uses **`complete()`** only). **`jsonMode`** (default **`true`**) sets **`application/json`** response MIME type.
 
 ### Ollama (local)
 
@@ -365,7 +391,7 @@ await query({
 });
 ```
 
-- **`createOllamaProvider(options?)`** — **`/api/chat`** with **`format: 'json'`** by default. **`keep_alive`** is sent on every request (default **`true`**; set **`keepAlive: false`** to unload the model after the call). Optional **`stream: true`**.
+- **`createOllamaProvider(options?)`** — **`/api/chat`** with **`format: 'json'`** by default. **`keep_alive`** is sent on every request (default **`true`**; set **`keepAlive: false`** to unload the model after the call). Optional **`stream: true`** (same caveat: **`query()`** uses **`complete()`** only).
 
 ### Custom (any async function)
 
@@ -584,13 +610,13 @@ await query({ prompt: '…', schema, provider, coerce: false });
 
 ### `fallbackToPartial`
 
-If every attempt fails validation but the last response could be parsed to a root object and coerced, you can still read `data` for logging or manual repair:
+If every attempt fails validation but the last response could be parsed to a root object and coerced, you can still read **`partialData`** for logging or manual repair (it is **not** schema-validated):
 
 ```typescript
 const result = await query({ prompt: '…', schema, provider, fallbackToPartial: true });
 if (!result.success) {
   console.warn(result.errors);
-  console.log('partial', result.data);
+  console.log('partial', result.partialData);
 }
 ```
 

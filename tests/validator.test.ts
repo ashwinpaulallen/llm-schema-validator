@@ -84,6 +84,16 @@ describe('validate', () => {
     expect(validate({ d: '2024-13-01' }, schema).length).toBeGreaterThan(0);
   });
 
+  it('rejects invalid ISO timezone offsets on datetime and time', () => {
+    const dt = { type: 'string' as const, required: true, format: 'datetime' as const };
+    const tm = { type: 'string' as const, required: true, format: 'time' as const };
+    expect(validate({ x: '2024-01-01T14:30:00+99:99' }, { x: dt }).length).toBeGreaterThan(0);
+    expect(validate({ x: '2024-01-01T14:30:00+14:01' }, { x: dt }).length).toBeGreaterThan(0);
+    expect(validate({ x: '2024-01-01T14:30:00+14:00' }, { x: dt })).toEqual([]);
+    expect(validate({ x: '14:30:00+99:99' }, { x: tm }).length).toBeGreaterThan(0);
+    expect(validate({ x: '14:30:00+05:30' }, { x: tm })).toEqual([]);
+  });
+
   it('validates nested object properties', () => {
     const schema = {
       user: {
@@ -213,6 +223,24 @@ describe('validate', () => {
   it('reports invalid regex in schema pattern', () => {
     const schema = {
       x: { type: 'string' as const, required: true, pattern: '[' },
+    };
+    const errs = validate({ x: 'a' }, schema);
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.message.includes('invalid pattern'))).toBe(true);
+  });
+
+  it('rejects nested-quantifier pattern sources (ReDoS heuristic)', () => {
+    const schema = {
+      x: { type: 'string' as const, required: true, pattern: '(a+)+' },
+    };
+    const errs = validate({ x: 'aaa' }, schema);
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.message.includes('invalid pattern'))).toBe(true);
+  });
+
+  it('rejects excessively long pattern sources', () => {
+    const schema = {
+      x: { type: 'string' as const, required: true, pattern: 'a'.repeat(520) },
     };
     const errs = validate({ x: 'a' }, schema);
     expect(errs.length).toBeGreaterThan(0);

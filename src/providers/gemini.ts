@@ -143,7 +143,7 @@ export function createGeminiProvider(
       generationConfig: buildGenerationConfig(),
     };
 
-    if (init?.systemPrompt) {
+    if (init?.systemPrompt != null && init.systemPrompt.length > 0) {
       body.systemInstruction = { parts: [{ text: init.systemPrompt }] };
     }
 
@@ -197,6 +197,7 @@ export function createGeminiProvider(
     async *stream(prompt: string, init?: CompleteOptions): AsyncIterable<StreamChunk> {
       const url = buildGeminiUrl(model, true);
       const body = buildRequestBody(prompt, init);
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
       try {
         const response = await fetch(url, {
@@ -214,7 +215,7 @@ export function createGeminiProvider(
           );
         }
 
-        const reader = response.body?.getReader();
+        reader = response.body?.getReader();
         if (!reader) {
           throw new ProviderError('Gemini stream: no response body', null);
         }
@@ -260,6 +261,14 @@ export function createGeminiProvider(
           `Gemini stream failed: ${error instanceof Error ? error.message : String(error)}`,
           error,
         );
+      } finally {
+        if (reader) {
+          try {
+            await reader.cancel();
+          } catch {
+            /* release connection when consumer stops early or after natural completion */
+          }
+        }
       }
     },
   };

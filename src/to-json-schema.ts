@@ -1,9 +1,6 @@
 import type { JSONSchema7, JSONSchema7Definition } from 'json-schema';
-import type { FieldSchema, Schema, SimpleFieldSchema, UnionFieldSchema } from './types.js';
-
-function isUnionField(field: FieldSchema): field is UnionFieldSchema {
-  return 'anyOf' in field && Array.isArray(field.anyOf);
-}
+import type { FieldSchema, Schema, SimpleFieldSchema } from './types.js';
+import { isUnionField } from './validator.js';
 
 function mapFormat(format: SimpleFieldSchema['format']): string | undefined {
   switch (format) {

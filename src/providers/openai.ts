@@ -86,6 +86,11 @@ type OpenAIModule = Record<string, unknown> & {
 
 let moduleCache: OpenAIModule | null = null;
 
+/** Clears the cached dynamic `import('openai')` result (test isolation, hot reload). */
+export function clearOpenAIModuleCache(): void {
+  moduleCache = null;
+}
+
 async function loadOpenAIModule(): Promise<OpenAIModule> {
   if (moduleCache) return moduleCache;
   try {

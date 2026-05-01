@@ -1,4 +1,5 @@
-import type { FieldSchema, Schema, SimpleFieldSchema, UnionFieldSchema } from './types.js';
+import type { FieldSchema, Schema, SimpleFieldSchema } from './types.js';
+import { isUnionField } from './validator.js';
 
 /**
  * Describes a change to a field in a schema.
@@ -30,10 +31,6 @@ export interface SchemaDiff {
   isIdentical: boolean;
   /** Whether the new schema is backward compatible (no removed required fields, no type changes). */
   isBackwardCompatible: boolean;
-}
-
-function isUnionField(field: FieldSchema): field is UnionFieldSchema {
-  return 'anyOf' in field && Array.isArray(field.anyOf);
 }
 
 function getFieldType(field: FieldSchema): string {
@@ -218,14 +215,14 @@ export function generateMigrationGuide(diff: SchemaDiff): string {
   const lines: string[] = ['# Schema Migration Guide', ''];
 
   if (!diff.isBackwardCompatible) {
-    lines.push('⚠️ **BREAKING CHANGES DETECTED** - This migration is not backward compatible.', '');
+    lines.push('[BREAKING] This migration is not backward compatible.', '');
   }
 
   if (diff.removed.length > 0) {
     lines.push('## Removed Fields', '');
     for (const change of diff.removed) {
-      const severity = change.oldField?.required ? '🔴 BREAKING' : '🟡 Non-breaking';
-      lines.push(`- ${severity}: ${change.description}`);
+      const severity = change.oldField?.required ? 'BREAKING' : 'Non-breaking';
+      lines.push(`- [${severity}] ${change.description}`);
     }
     lines.push('');
   }

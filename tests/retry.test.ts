@@ -216,7 +216,7 @@ describe('executeWithRetry', () => {
       opts({ provider, maxRetries: 1, coerce: false, fallbackToPartial: true }),
     );
     expect(result.success).toBe(false);
-    expect(result.data).toEqual({ answer: 'still wrong' });
+    expect(result.partialData).toEqual({ answer: 'still wrong' });
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
@@ -636,6 +636,47 @@ describe('executeWithRetry', () => {
     });
     expect(result.success).toBe(true);
     expect(result.data).toEqual([1, 2]);
+  });
+
+  it('uses errorMessages templates for per-field validation errors', async () => {
+    const onAttempt = vi.fn();
+    const provider = { complete: vi.fn().mockResolvedValue('{}') };
+    await expect(
+      executeWithRetry(
+        opts({
+          provider,
+          maxRetries: 1,
+          coerce: false,
+          onAttempt,
+          errorMessages: {
+            required: (field) => `CUSTOM_REQUIRED:${field}`,
+          },
+        }),
+      ),
+    ).rejects.toThrow(QueryRetriesExhaustedError);
+    const errors = onAttempt.mock.calls[0]![1] as string[];
+    expect(errors.some((e) => e.includes('CUSTOM_REQUIRED:answer'))).toBe(true);
+  });
+
+  it('uses errorMessages templates for array root validation errors', async () => {
+    const onAttempt = vi.fn();
+    const provider = { complete: vi.fn().mockResolvedValue('[""]') };
+    await expect(
+      executeWithRetry({
+        prompt: 'x',
+        provider,
+        rootType: 'array',
+        arraySchema: { type: 'array', required: true, itemType: 'number' },
+        maxRetries: 1,
+        coerce: false,
+        onAttempt,
+        errorMessages: {
+          typeMismatch: (field, expected) => `CUSTOM_TYPE:${field}:${expected}`,
+        },
+      }),
+    ).rejects.toThrow(QueryRetriesExhaustedError);
+    const errors = onAttempt.mock.calls[0]![1] as string[];
+    expect(errors.some((e) => e.includes('CUSTOM_TYPE:'))).toBe(true);
   });
 
   it('includes query-level validation in onAttempt errors', async () => {

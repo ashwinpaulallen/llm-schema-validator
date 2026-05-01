@@ -1,6 +1,5 @@
+import { LOG_PREFIX } from './constants.js';
 import type { ErrorMessageTemplates } from './types.js';
-
-const LOG_PREFIX = '[llm-schema-validator]';
 
 /**
  * Default English error message templates.
@@ -12,6 +11,8 @@ export const defaultErrorMessages: Required<ErrorMessageTemplates> = {
     `${LOG_PREFIX} Field "${field}" must match: ${expected}`,
   patternMismatch: (field, _pattern) =>
     `${LOG_PREFIX} Field "${field}" does not match the required pattern`,
+  invalidSchemaPattern: (field, _pattern) =>
+    `${LOG_PREFIX} Field "${field}" schema has an invalid pattern`,
   minLength: (field, minLength, _actualLength) =>
     `${LOG_PREFIX} Field "${field}" is shorter than minLength ${minLength}`,
   maxLength: (field, maxLength, _actualLength) =>

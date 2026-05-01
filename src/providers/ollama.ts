@@ -203,6 +203,7 @@ export function createOllamaProvider(
     async *stream(prompt: string, init?: CompleteOptions): AsyncIterable<StreamChunk> {
       const url = `${baseUrl}/api/chat`;
       const body = buildRequestBody(prompt, init, true);
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
       try {
         const response = await fetch(url, {
@@ -220,7 +221,7 @@ export function createOllamaProvider(
           );
         }
 
-        const reader = response.body?.getReader();
+        reader = response.body?.getReader();
         if (!reader) {
           throw new ProviderError('Ollama stream: no response body', null);
         }
@@ -268,6 +269,14 @@ export function createOllamaProvider(
           `Ollama stream failed: ${error instanceof Error ? error.message : String(error)}`,
           error,
         );
+      } finally {
+        if (reader) {
+          try {
+            await reader.cancel();
+          } catch {
+            /* release connection when consumer stops early or after natural completion */
+          }
+        }
       }
     },
   };

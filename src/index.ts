@@ -35,8 +35,10 @@ export { validateExamples, type ExampleValidationResult, type ExampleValidationE
  * **`QueryResult.usage`** sums token counts from the provider when available (see **`CompletionUsage`**).
  * **`QueryResult.durationMs`** is total wall-clock time for the call (attempts, parsing, and inter-attempt backoff); **`onAttempt`** always receives **`meta.durationMs`** per attempt (**`meta`** is optional in the callback type for two-parameter handlers).
  * **`onComplete`** runs once at the end with **`QueryCompletionSummary`** (success or failure, including **`QueryRetriesExhaustedError`** and **`ProviderError`**) for metrics without wrapping every call in try/catch.
- * For an object root, `data` is inferred from `schema` when you use {@link defineSchema} (see {@link InferSchema}).
- * For {@link QueryArrayOptions}, `data` is inferred from `arraySchema` (see {@link InferFieldValue}).
+ * **`QueryResult`** is a discriminated union: **`success: true`** → validated **`data`**; **`success: false`**
+ * with **`fallbackToPartial: true`** → unvalidated **`partialData`** (see **`QuerySuccessResult`** / **`QueryPartialFailureResult`**).
+ * For an object root, that payload is inferred from `schema` when you use {@link defineSchema} (see {@link InferSchema}).
+ * For {@link QueryArrayOptions}, from `arraySchema` (see {@link InferFieldValue}).
  * Use **`validate`** on options for cross-field rules after per-field validation (object or array root).
  * Use **`fewShot`** for input → output example pairs injected into the user message (`FewShotExample` in `types`).
  * Set **`chainOfThought: true`** to ask for reasoning in plain text before the final JSON (more tokens, often better on hard extractions).
@@ -54,7 +56,7 @@ export function query(options: QueryOptions): Promise<QueryResult<unknown>> {
 }
 
 /**
- * Pass-through helper so schema literals stay narrow-typed: use with {@link query} for inferred `QueryResult.data`.
+ * Pass-through helper so schema literals stay narrow-typed: use with {@link query} for inferred **`QuerySuccessResult.data`** (on **`success: true`**).
  */
 export function defineSchema<S extends Schema>(schema: S): S {
   return schema;

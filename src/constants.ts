@@ -8,6 +8,12 @@ export const LOG_PREFIX = '[llm-schema-validator]';
 /** Maximum length of raw LLM response to include in error messages. */
 export const MAX_ERROR_SNIPPET = 500;
 
+/** Max length of a field `pattern` string before it is rejected (mitigates ReDoS / compile cost). */
+export const MAX_SCHEMA_PATTERN_SOURCE_LENGTH = 512;
+
+/** Max characters of model output logged at `debug` unless `logFullRawResponses` is enabled. */
+export const MAX_DEBUG_RAW_RESPONSE_PREVIEW = 256;
+
 /** Maximum length of field description in schema prompts. */
 export const MAX_DESCRIPTION_LENGTH = 120;
 
