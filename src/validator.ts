@@ -338,6 +338,25 @@ function validateNumberConstraints(value: number, field: SimpleFieldSchema, path
       );
     }
   }
+  if (
+    typeof field.multipleOf === 'number' &&
+    Number.isFinite(field.multipleOf) &&
+    field.multipleOf > 0
+  ) {
+    const quotient = value / field.multipleOf;
+    const tolerance = 1e-10;
+    const isMultiple = Math.abs(quotient - Math.round(quotient)) < tolerance;
+    if (!isMultiple) {
+      errors.push(
+        issue(
+          path,
+          `multiple of ${field.multipleOf}`,
+          value,
+          `[llm-schema-validator] Field "${path}" must be a multiple of ${field.multipleOf}`,
+        ),
+      );
+    }
+  }
   return errors;
 }
 
